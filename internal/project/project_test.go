@@ -65,6 +65,8 @@ func TestSessionEnv(t *testing.T) {
 	tokens := []*forge.Token{{Kind: forge.GitLab, Host: "gitlab.com", Token: "glpat_1"}}
 	want := "CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX='my '\\''repo'\\'''\n" +
 		"export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX\n" +
+		"CLAUDE_CODE_SCROLL_SPEED=\"${CLAUDE_CODE_SCROLL_SPEED:-12}\"\n" +
+		"export CLAUDE_CODE_SCROLL_SPEED\n" +
 		"GITLAB_HOST=gitlab.com\n" +
 		"GITLAB_TOKEN=\"$(cat /opt/devc/tokens/gitlab.com)\"\n" +
 		"export GITLAB_HOST GITLAB_TOKEN\n"

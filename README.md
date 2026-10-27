@@ -1,10 +1,9 @@
 # devc
 
-Create, start and attach to devcontainers for the current repository, and run
-a shell or Claude Code inside them. Your editor stays on the host, only the
-tools run in the container.
+Create, start and attach to devcontainers for the current git repository, and run
+a shell or Claude Code inside them.
 
-Your shell history, git config, Claude Code settings and credentials, and
+Your shell history, git config, Claude Code settings, credentials, and
 `~/.ai` preferences are shared with every container. When claude is started
 by devc your Claude settings and instructions take precedence over the
 project's.
@@ -14,6 +13,8 @@ project's.
 - Docker
 - The [devcontainer CLI](https://github.com/devcontainers/cli):
   `npm install -g @devcontainers/cli`
+- `xclip`, `xsel` or `wl-clipboard` on the host to copy from containers to
+  the clipboard
 - Go 1.26 to build
 - shellcheck for `make lint`
 
@@ -127,6 +128,31 @@ installed in `/etc/profile.d` for login shells started with `devc shell`.
 The settings passed this way also add a Stop hook that appends each claude
 response to `.claude.log` in the working directory.
 
+Sessions set `CLAUDE_CODE_SCROLL_SPEED`, the lines claude scrolls per mouse
+wheel step in fullscreen mode, to 12 unless the container environment already
+sets it.
+
+## Clipboard
+
+Programs in the container have no access to the host clipboard. They copy
+with OSC 52 escape sequences instead: claude does when you select text or
+run `/copy`, and so do tmux and neovim when configured to. devc runs sessions
+on a pseudo-terminal of its own, removes these sequences from the output and
+writes their text to both the host clipboard and the primary selection pasted
+with the middle mouse button. It uses `xclip` or `xsel` on X11 and on Wayland
+sessions with XWayland, and `wl-copy` on Wayland sessions without it, so
+copying works in GNOME, KDE, XFCE and other desktops whether or not the
+terminal supports OSC 52. Errors are logged to `~/.local/state/devc/devc.log`.
+
+The container can write the clipboard but not read it. Paste into the
+container with the terminal: Ctrl+Shift+V, or Shift and the middle mouse
+button while claude has the mouse. Claude's own middle-click and image paste
+read the clipboard and do not work.
+
+Copying needs a Linux host with an X11 or Wayland display and a terminal on
+both stdin and stdout. Otherwise the sequences pass through to the terminal
+unchanged.
+
 ## devc config
 
 Optional settings live in `~/.config/devc/config.json`:
@@ -209,6 +235,8 @@ make fmt      # gofmt -s -w .
 | `internal/share` | Files copied from the host home directory and the change watcher |
 | `internal/claude` | Claude settings overlay and claude command lines |
 | `internal/forge` | GitHub and GitLab detection, CLI installs and per-repository tokens |
+| `internal/clipboard` | OSC 52 filter and host clipboard writes |
+| `internal/terminal` | Pseudo-terminal sessions on Linux |
 | `internal/release` | Checksum verified release downloads |
 | `internal/config` | devc settings and the shared devcontainer config |
 | `internal/assets` | Files installed in containers and their paths |

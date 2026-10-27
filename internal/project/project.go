@@ -263,7 +263,11 @@ func (p *Project) provision(ctx context.Context, c *container.Container) ([]forg
 func attached(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err := cmd.Run()
+	return commandError(name, cmd.Run())
+}
+
+// commandError returns err, naming the command when it is not in PATH.
+func commandError(name string, err error) error {
 	if errors.Is(err, exec.ErrNotFound) {
 		return fmt.Errorf("%s not found in PATH", name)
 	}
