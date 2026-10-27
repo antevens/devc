@@ -18,6 +18,8 @@
 - `internal/share`: shared home directory files and the change watcher
 - `internal/claude`: Claude settings overlay and command lines
 - `internal/forge`: forge detection, gh/glab installs, per-repository tokens
+- `internal/clipboard`: OSC 52 filter and host clipboard relay
+- `internal/terminal`: pseudo-terminal sessions on Linux
 - `internal/release`: checksum verified release downloads
 - `internal/config`: devc settings, embedded shared devcontainer config
 - `internal/assets`: files installed in containers, under `files/`

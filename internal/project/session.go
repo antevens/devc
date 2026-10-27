@@ -2,27 +2,33 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/antevens/devc/internal/archive"
 	"github.com/antevens/devc/internal/assets"
 	"github.com/antevens/devc/internal/claude"
+	"github.com/antevens/devc/internal/clipboard"
 	"github.com/antevens/devc/internal/container"
 	"github.com/antevens/devc/internal/forge"
 	"github.com/antevens/devc/internal/share"
+	"github.com/antevens/devc/internal/terminal"
 	"github.com/antevens/devc/internal/xdg"
 )
 
 // Session runs cmd in the devcontainer through the launcher, starting the
 // container if needed. While cmd runs, changed shared files are copied into
-// the container and tokens are renewed, logging errors to devc.log in the
-// state directory.
+// the container, tokens are renewed and OSC 52 copies are written to the
+// host clipboard, logging errors to devc.log in the state directory.
 func (p *Project) Session(ctx context.Context, cmd []string) error {
 	c, err := container.Find(p.Workspace)
 	if err != nil {
@@ -76,7 +82,35 @@ func (p *Project) Session(ctx context.Context, cmd []string) error {
 	// The command in the container handles interrupts.
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
 	defer signal.Reset(syscall.SIGINT, syscall.SIGQUIT)
-	return attached(ctx, "devcontainer", args...)
+	return runSession(ctx, args, log)
+}
+
+// runSession runs devcontainer with args attached to the terminal. When
+// stdin and stdout are terminals and the host has a clipboard tool, it runs
+// on a pseudo-terminal and OSC 52 copies are written to the host clipboard
+// and primary selection, logging errors to log.
+func runSession(ctx context.Context, args []string, log *slog.Logger) error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return attached(ctx, "devcontainer", args...)
+	}
+	host, err := clipboard.FindHost()
+	if err != nil {
+		if !errors.Is(err, clipboard.ErrNoDisplay) {
+			warn(fmt.Errorf("not copying to the clipboard: %w", err))
+		}
+		return attached(ctx, "devcontainer", args...)
+	}
+	relay := clipboard.NewRelay(host, log)
+	defer relay.Close()
+	filter := clipboard.NewFilter(os.Stdout, relay.Copy)
+	err = terminal.Run(exec.CommandContext(ctx, "devcontainer", args...), os.Stdin, filter)
+	if errors.Is(err, errors.ErrUnsupported) {
+		return attached(ctx, "devcontainer", args...)
+	}
+	if flushErr := filter.Flush(); err == nil {
+		err = flushErr
+	}
+	return commandError("devcontainer", err)
 }
 
 func openLog(home string) (*os.File, error) {
@@ -101,12 +135,18 @@ func installSession(c *container.Container, name string, tokens []*forge.Token) 
 	return c.ExtractRoot(data)
 }
 
+// scrollSpeed is the default number of lines claude scrolls per mouse wheel
+// step in fullscreen mode.
+const scrollSpeed = 12
+
 // sessionEnv returns the session environment: the Remote Control session
-// name prefix and the forge variables.
+// name prefix, the default claude scroll speed and the forge variables.
 func sessionEnv(name string, tokens []*forge.Token) string {
 	lines := []string{
 		"CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=" + shellQuote(name),
 		"export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX",
+		fmt.Sprintf(`CLAUDE_CODE_SCROLL_SPEED="${CLAUDE_CODE_SCROLL_SPEED:-%d}"`, scrollSpeed),
+		"export CLAUDE_CODE_SCROLL_SPEED",
 	}
 	lines = append(lines, forge.Env(tokens)...)
 	return strings.Join(lines, "\n") + "\n"
