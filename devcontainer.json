@@ -1,0 +1,17 @@
+// Shared devcontainer config for repositories without their own, created by
+// devc. Edit it to suit your projects, `devc update` applies the changes.
+{
+  "name": "devc",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "runArgs": [
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "remoteEnv": {
+    "TERM": "xterm-256color",
+    "HISTCONTROL": "erasedups"
+  }
+}

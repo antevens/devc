@@ -1,0 +1,163 @@
+# devc
+
+Create, start and attach to devcontainers for the current repository, and run
+a shell or Claude Code inside them. Your editor stays on the host, only the
+tools run in the container.
+
+Your shell history, git config, Claude Code settings and credentials, and
+`~/.ai` preferences are shared with every container. When claude is started
+by devc your Claude settings and instructions take precedence over the
+project's.
+
+## Requirements
+
+- Docker
+- The [devcontainer CLI](https://github.com/devcontainers/cli):
+  `npm install -g @devcontainers/cli`
+- Go 1.26 to build
+
+## Install
+
+```sh
+go install github.com/antevens/devc@latest  # or: make install, to ~/.local/bin
+source <(devc completion bash)               # add to ~/.bashrc
+```
+
+## Usage
+
+```
+devc up            Create and start the devcontainer
+devc shell [cmd]   Open a login shell (or run cmd), starting the container if needed
+devc claude [args] Run claude, starting the container if needed
+devc remote [args] Run claude remote-control, so the Claude apps can start sessions
+                   in the project
+devc update        Recreate without image cache, picking up config changes and the
+                   latest feature versions such as claude
+devc rebuild       Recreate, reusing cached image layers
+devc stop | rm     Stop or remove the devcontainer
+devc init          Copy the shared config into .devcontainer/ to customise it
+devc ls            List all devcontainers
+```
+
+The workspace is the git top-level of the current directory. Repositories
+with a `.devcontainer/devcontainer.json` or `.devcontainer.json` use it
+unchanged. Others use the shared config at
+`~/.config/devcontainer/devcontainer.json` (or `$DEVC_CONFIG`), created on
+first use. A config copied by `devc init` is replaced by `devc update` with
+the latest shared config, unless you have edited it.
+
+## Compatibility with repository configs
+
+devc never edits a repository's devcontainer.json. Everything it adds is
+passed to the devcontainer CLI or copied into the running container:
+
+- `--mount` binds `~/.bash_history` to `/mnt/devc/bash_history`, and sessions
+  set `HISTFILE` to it. Mounts only apply when the container is created, so
+  run `devc rebuild` for containers created without devc.
+- `--additional-features` installs claude (and Node.js, which it needs) when
+  the config has no claude-code feature. Features the config already has
+  keep their options.
+- Files are copied into the remote user's home directory, whichever user
+  and image the config uses.
+
+## Shared files
+
+Copied into the container's home directory with symlinks followed, so
+dotfiles kept in another directory work:
+
+| Host | Notes |
+| --- | --- |
+| `~/.claude` | Settings, CLAUDE.md, agents, commands, skills, plugins and credentials. Session state such as `projects/`, `todos/` and `history.jsonl` stays per machine. |
+| `~/.claude.json` | Account and MCP server config. |
+| `~/.ai` | AI preferences. |
+| `~/.gitconfig` | |
+| `~/.docker/config.json` | Registries whose name contains `upload` are removed and the file is read-only, leaving pull access only. |
+| `microk8s config` | Written to `~/.kube/config` when microk8s runs on the host. |
+
+While a devc session runs, changes to `~/.claude` and `~/.ai`
+on the host are copied into the container. Changes made in the container are
+not copied back. Sync errors are logged to `~/.local/state/devc/devc.log`.
+
+## Claude settings precedence
+
+Claude Code ranks settings, highest first: managed, command line, local
+project, shared project, user. Copied into the container, your
+`~/.claude/settings.json` would rank below the project's, so devc also passes
+it with `--settings`, which ranks above both project scopes. Your values win
+where both set the same key. Lists such as permission rules and hooks are
+merged from every scope, so the project's additions still apply.
+
+CLAUDE.md files have no precedence order, so devc appends a system prompt
+telling claude to prefer `~/.claude/CLAUDE.md` over the project's
+instructions where they conflict.
+
+Both flags are added by `devc claude` and by a `claude` shell function
+installed in `/etc/profile.d` for login shells started with `devc shell`.
+
+The settings passed this way also add a Stop hook that appends each claude
+response to `.claude.log` in the working directory.
+
+## devc config
+
+Optional settings live in `~/.config/devc/config.json`:
+
+```json
+{
+  "remote_control": true,
+  "gitlab": [
+    {"host": "gitlab.com", "token_command": "pass show gitlab/devc"}
+  ],
+  "github": [
+    {"host": "github.com", "app_id": "123456", "private_key_file": "~/.config/devc/github-app.pem"}
+  ]
+}
+```
+
+## GitHub and GitLab
+
+devc looks at the workspace's git remotes (origin first) and for `.github`,
+`.gitlab-ci.yml` or `.gitlab`. For each forge found it installs the CLI, `gh`
+or `glab`, in the container if missing, from the official release archive
+verified against its published checksums and cached in `~/.cache/devc`.
+
+With a credential configured for the remote's host, devc also gives the
+container a token limited to that one repository. The credential that
+creates these tokens is only used on the host and is never copied into the
+container.
+
+- **GitLab**: `token_command` prints a token with the `api` scope from a user
+  with at least the Maintainer role on the project. devc creates a project
+  access token with the Developer role and the `api` and `write_repository`
+  scopes, valid for 30 days and replaced a week before it expires. It can
+  push to unprotected branches and create, review and comment on merge
+  requests. GitLab has no narrower merge request scope, so it can also make
+  the project's other Developer level API calls, such as issues. Project
+  access tokens may need a paid tier on gitlab.com.
+- **GitHub**: GitHub has no API for creating personal access tokens, so the
+  credential is a GitHub App. Create one with the repository permissions
+  Contents and Pull requests set to read and write, install it on the
+  repositories, and save its private key. devc mints installation tokens
+  limited to the repository with those two permissions. They last an hour
+  and are renewed while a session runs. Pushing changes to
+  `.github/workflows` needs the Workflows permission, which is not requested.
+
+In the container git uses the token through a credential helper, and SSH
+remotes of the host are rewritten to HTTPS, as SSH keys are not shared. `glab`
+gets `GITLAB_TOKEN` and `GITLAB_HOST` exported. `gh` reads the token from
+`~/.config/gh/hosts.yml`: an exported variable would go stale when the token
+is renewed. `devc rm` revokes the workspace's tokens.
+
+## Claude apps
+
+`devc remote` runs `claude remote-control` named after the workspace, so new
+sessions in the project can be started from the Claude mobile app and
+claude.ai/code while it runs. Server mode refuses `--settings`, so these
+sessions use Claude's usual settings precedence.
+
+With `"remote_control": true`, `devc claude` also makes each interactive
+session available in the apps, named after the workspace. Sessions named
+automatically use the workspace name as prefix, not the container's
+hostname.
+
+Remote Control requires claude to be logged in with a claude.ai
+subscription. API keys and `claude setup-token` tokens are not supported.
