@@ -1,34 +1,39 @@
 # devc Development Guide
 
 ## Commands
-- Build: `make build`
-- Install to ~/.local/bin: `make install`
-- Test: `make test`, single test: `go test -v -run TestName .`
+
+- Lint, test and build: `make`
+- Build to `bin/devc`: `make build`
+- Install to `~/.local/bin`: `make install`
+- Test: `make test`
+- Single test: `go test -v -run TestName ./internal/<package>`
 - Format: `make fmt`
 - Lint: `make lint`
 
 ## Layout
-- `main.go`: command dispatch and usage
-- `project.go`: workspace, config selection, devcontainer CLI calls
-- `container.go`: container inspection and file extraction
-- `share.go`: files copied from the host home directory
-- `claude.go`: Claude settings overlay, precedence prompt, hook and shell function
-- `watch.go`: syncing host changes into a running session
-- `config.go`: shared default config, `init` and `update` refresh
-- `forge.go`: devc config, GitHub/GitLab detection and per-repository token cache
-- `github.go`, `gitlab.go`: token creation and revocation for each forge
-- `tools.go`: gh and glab installation from release archives
-- `provision.go`: tokens, git credential helper, gh config and session launcher
-- `devcontainer.json`: embedded default shared config
+
+- `cmd/devc`: command dispatch, usage and bash completion template
+- `internal/project`: workspace lifecycle, provisioning and sessions
+- `internal/container`: container lookup and file extraction
+- `internal/share`: shared home directory files and the change watcher
+- `internal/claude`: Claude settings overlay and command lines
+- `internal/forge`: forge detection, gh/glab installs, per-repository tokens
+- `internal/release`: checksum verified release downloads
+- `internal/config`: devc settings, embedded shared devcontainer config
+- `internal/assets`: files installed in containers, under `files/`
+- `internal/archive`: in-memory tar archives
+- `internal/xdg`: XDG base directories
 
 ## Code Style
-- Standard Go formatting, staticcheck clean
-- Standard library only apart from fsnotify
+
+- `gofmt -s`, `go vet` and staticcheck clean
+- Standard library only apart from fsnotify and golang.org/x/term
 - Never modify a repository's devcontainer.json; add behaviour with
   devcontainer CLI flags or by copying files into the container
 - Credentials that create tokens stay on the host; only per-repository
   tokens are copied into the container
 - Errors to stderr prefixed `devc:`, normal output to stdout
-- Shell scripts: Google shell style guide, `function` keyword definitions,
-  lower case internal variables, upper case environment variables, and
-  they must pass shellcheck
+- Shell scripts are files under `internal/assets/files`, embedded with
+  `go:embed`, and follow the Google shell style guide: bash, `function`
+  keyword definitions, lower case internal variables, upper case environment
+  variables, `mapfile` for arrays, and they must pass shellcheck

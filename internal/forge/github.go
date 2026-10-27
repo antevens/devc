@@ -1,6 +1,7 @@
-package main
+package forge
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,10 +19,7 @@ import (
 	"time"
 )
 
-// GitHub has no API to create personal access tokens, so devc uses a GitHub
-// App: its private key stays on the host and mints installation tokens
-// limited to one repository and these permissions. They expire after an
-// hour and are renewed while a session runs.
+// githubPermissions are granted to installation tokens.
 var githubPermissions = map[string]string{
 	"contents":      "write",
 	"pull_requests": "write",
@@ -35,38 +33,30 @@ func githubAPI(host string) string {
 	return "https://" + host + "/api/v3"
 }
 
-// githubConfig returns the App configured for host, nil if none is.
-func (s settings) githubConfig(host string) *githubConfig {
-	for i := range s.GitHub {
-		if s.GitHub[i].Host == host {
-			return &s.GitHub[i]
-		}
-	}
-	return nil
-}
-
-// githubToken creates an installation token for the forge's repository.
-func (p *project) githubToken(f forge) (*token, error) {
-	c := p.settings.githubConfig(f.host)
-	if c == nil {
+// githubToken creates an installation token of the configured GitHub App,
+// limited to the forge's repository and githubPermissions. It returns nil
+// when no App is configured for the host.
+func (fc *Client) githubToken(ctx context.Context, f Forge) (*Token, error) {
+	app := fc.Settings.GitHubFor(f.Host)
+	if app == nil {
 		return nil, nil
 	}
-	_, repo, ok := strings.Cut(f.project, "/")
+	_, repo, ok := strings.Cut(f.Project, "/")
 	if !ok || strings.Contains(repo, "/") {
-		return nil, fmt.Errorf("unexpected GitHub repository %q", f.project)
+		return nil, fmt.Errorf("unexpected GitHub repository %q", f.Project)
 	}
-	jwt, err := appJWT(c.AppID, expandHome(c.PrivateKeyFile, p.home), time.Now())
+	jwt, err := appJWT(app.AppID, expandHome(app.PrivateKeyFile, fc.Home), time.Now())
 	if err != nil {
 		return nil, err
 	}
 	auth := map[string]string{"Authorization": "Bearer " + jwt, "X-GitHub-Api-Version": "2022-11-28"}
-	api := githubAPI(f.host)
+	api := githubAPI(f.Host)
 
 	var installation struct {
 		ID int `json:"id"`
 	}
-	if err := apiCall(http.MethodGet, api+"/repos/"+f.project+"/installation", auth, nil, &installation); err != nil {
-		return nil, fmt.Errorf("GitHub App %s is not installed on %s: %w", c.AppID, f.project, err)
+	if err := fc.call(ctx, http.MethodGet, api+"/repos/"+f.Project+"/installation", auth, nil, &installation); err != nil {
+		return nil, fmt.Errorf("find GitHub App %s installation on %s: %w", app.AppID, f.Project, err)
 	}
 
 	var created struct {
@@ -74,28 +64,29 @@ func (p *project) githubToken(f forge) (*token, error) {
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	body := map[string]any{"repositories": []string{repo}, "permissions": githubPermissions}
-	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", api, installation.ID)
-	if err := apiCall(http.MethodPost, endpoint, auth, body, &created); err != nil {
-		return nil, fmt.Errorf("create token for %s: %w", f.project, err)
+	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", api, installation.ID)
+	if err := fc.call(ctx, http.MethodPost, url, auth, body, &created); err != nil {
+		return nil, fmt.Errorf("create token for %s: %w", f.Project, err)
 	}
-	return &token{Kind: github, Host: f.host, Project: f.project, Token: created.Token, Expires: created.ExpiresAt}, nil
+	return &Token{Kind: GitHub, Host: f.Host, Project: f.Project, Token: created.Token, Expires: created.ExpiresAt}, nil
 }
 
-// revokeGithubToken revokes an installation token with the token itself. A
-// token GitHub no longer accepts is already expired or revoked.
-func revokeGithubToken(t *token) error {
-	if time.Now().After(t.Expires) {
+// revokeGithubToken revokes an installation token using the token. Expired
+// tokens and tokens GitHub rejects are treated as revoked.
+func (fc *Client) revokeGithubToken(ctx context.Context, tok *Token) error {
+	if time.Now().After(tok.Expires) {
 		return nil
 	}
-	err := apiCall(http.MethodDelete, githubAPI(t.Host)+"/installation/token",
-		map[string]string{"Authorization": "Bearer " + t.Token}, nil, nil)
-	if err != nil && strings.Contains(err.Error(), "401") {
+	err := fc.call(ctx, http.MethodDelete, githubAPI(tok.Host)+"/installation/token",
+		map[string]string{"Authorization": "Bearer " + tok.Token}, nil, nil)
+	if hasStatus(err, http.StatusUnauthorized) {
 		return nil
 	}
 	return err
 }
 
-// appJWT returns the JSON Web Token authenticating as a GitHub App.
+// appJWT returns a JSON Web Token authenticating as a GitHub App, valid from
+// a minute before now for ten minutes.
 func appJWT(appID, keyFile string, now time.Time) (string, error) {
 	if appID == "" {
 		return "", errors.New("github app_id is not set")
@@ -117,8 +108,6 @@ func appJWT(appID, keyFile string, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Issued in the past to allow for clock drift, GitHub accepts at most
-	// ten minutes of validity.
 	claims, err := encode(map[string]any{"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": appID})
 	if err != nil {
 		return "", err

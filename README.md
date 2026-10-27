@@ -15,18 +15,25 @@ project's.
 - The [devcontainer CLI](https://github.com/devcontainers/cli):
   `npm install -g @devcontainers/cli`
 - Go 1.26 to build
+- shellcheck for `make lint`
 
 ## Install
 
 ```sh
-go install github.com/antevens/devc@latest  # or: make install, to ~/.local/bin
-source <(devc completion bash)               # add to ~/.bashrc
+go install github.com/antevens/devc/cmd/devc@latest
+source <(devc completion bash)  # add to ~/.bashrc
+```
+
+Or from a checkout, to `~/.local/bin`:
+
+```sh
+make install
 ```
 
 ## Usage
 
-```
-devc up            Create and start the devcontainer
+```text
+devc up | start    Create and start the devcontainer
 devc shell [cmd]   Open a login shell (or run cmd), starting the container if needed
 devc claude [args] Run claude, starting the container if needed
 devc remote [args] Run claude remote-control, so the Claude apps can start sessions
@@ -34,17 +41,40 @@ devc remote [args] Run claude remote-control, so the Claude apps can start sessi
 devc update        Recreate without image cache, picking up config changes and the
                    latest feature versions such as claude
 devc rebuild       Recreate, reusing cached image layers
-devc stop | rm     Stop or remove the devcontainer
+devc stop | down   Stop the devcontainer
+devc rm [-y] [name|id...]
+                   Remove the given devcontainers, or the workspace's after
+                   confirmation, and revoke their repository tokens
 devc init          Copy the shared config into .devcontainer/ to customise it
-devc ls            List all devcontainers
+devc ls            List all devcontainers with their IDs and names
 ```
 
-The workspace is the git top-level of the current directory. Repositories
+The workspace is the git top-level of the current directory. Outside a git
+repository it is the nearest directory with a devcontainer config or
+devcontainer, else the current directory. Repositories
 with a `.devcontainer/devcontainer.json` or `.devcontainer.json` use it
 unchanged. Others use the shared config at
 `~/.config/devcontainer/devcontainer.json` (or `$DEVC_CONFIG`), created on
 first use. A config copied by `devc init` is replaced by `devc update` with
 the latest shared config, unless you have edited it.
+
+## Removing devcontainers
+
+`devc rm` without arguments shows the workspace's devcontainers and asks for
+confirmation. It needs a terminal for the prompt, or `-y` to skip it.
+`devc rm` with names or IDs, full or short as listed by `devc ls` or
+`docker ps`, removes those devcontainers without asking. Containers that are
+not devcontainers are refused.
+
+For Docker Compose configs the other containers and the networks of the
+Compose project are removed too. Named volumes are kept. `devc stop` stops
+the whole Compose project.
+
+## Tools in every devcontainer
+
+`bash`, `vim` and `shellcheck` are installed in each devcontainer that lacks
+them, with the container's package manager: apt, apk, dnf, microdnf, yum,
+zypper or pacman.
 
 ## Compatibility with repository configs
 
@@ -161,3 +191,26 @@ hostname.
 
 Remote Control requires claude to be logged in with a claude.ai
 subscription. API keys and `claude setup-token` tokens are not supported.
+
+## Development
+
+```sh
+make          # lint, test and build bin/devc
+make test     # go test ./...
+make lint     # gofmt, go vet, staticcheck, shellcheck, trailing whitespace
+make fmt      # gofmt -s -w .
+```
+
+| Path | Contents |
+| --- | --- |
+| `cmd/devc` | Command line entry point and bash completion |
+| `internal/project` | Workspace lifecycle: devcontainer CLI calls, provisioning, sessions |
+| `internal/container` | Container lookup and file extraction through the docker CLI |
+| `internal/share` | Files copied from the host home directory and the change watcher |
+| `internal/claude` | Claude settings overlay and claude command lines |
+| `internal/forge` | GitHub and GitLab detection, CLI installs and per-repository tokens |
+| `internal/release` | Checksum verified release downloads |
+| `internal/config` | devc settings and the shared devcontainer config |
+| `internal/assets` | Files installed in containers and their paths |
+| `internal/archive` | In-memory tar archives |
+| `internal/xdg` | XDG base directories |
