@@ -252,11 +252,10 @@ func (p *Project) provision(ctx context.Context, c *container.Container) ([]forg
 	if err := p.forges.InstallTools(ctx, c, forges, xdg.CacheDir(p.home), os.Stderr); err != nil {
 		warn(err)
 	}
-	tokens, err := p.forges.Install(ctx, c, forges)
-	if err != nil {
+	if err := p.forges.Install(ctx, c, forges); err != nil {
 		warn(err)
 	}
-	return forges, installSession(c, p.Name(), tokens)
+	return forges, installSession(c, p.Name())
 }
 
 // attached runs a command attached to the terminal.

@@ -49,30 +49,26 @@ func (fc *Client) gitlabCredential(ctx context.Context, host string) (string, er
 	return credential, nil
 }
 
-// gitlabToken creates a project access token for the forge's project and
-// revokes previous, if not nil. It returns nil when no credential is
-// configured for the host.
-func (fc *Client) gitlabToken(ctx context.Context, f Forge, previous *Token) (*Token, error) {
+// gitlabToken creates a project access token for the forge's project. It
+// returns nil when no credential is configured for the host.
+func (fc *Client) gitlabToken(ctx context.Context, f Forge) (*Token, error) {
 	credential, err := fc.gitlabCredential(ctx, f.Host)
 	if err != nil || credential == "" {
 		return nil, err
 	}
-	if previous != nil {
-		// Failures are ignored.
-		_ = fc.revokeGitlabToken(ctx, previous)
-	}
 
 	hostname, _ := os.Hostname()
-	expires := time.Now().Add(gitlabLifetime)
+	expiresAt := time.Now().UTC().Add(gitlabLifetime).Format(time.DateOnly)
 	body := map[string]any{
 		"name":         "devc " + hostname,
 		"scopes":       gitlabScopes,
 		"access_level": gitlabAccessLevel,
-		"expires_at":   expires.Format(time.DateOnly),
+		"expires_at":   expiresAt,
 	}
 	var created struct {
-		ID    int    `json:"id"`
-		Token string `json:"token"`
+		ID        int    `json:"id"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
 	}
 	endpoint := gitlabAPI(f.Host) + "/projects/" + url.PathEscape(f.Project) + "/access_tokens"
 	if err := fc.call(ctx, http.MethodPost, endpoint, map[string]string{"PRIVATE-TOKEN": credential}, body, &created); err != nil {
@@ -80,6 +76,11 @@ func (fc *Client) gitlabToken(ctx context.Context, f Forge, previous *Token) (*T
 	}
 	if created.Token == "" {
 		return nil, errors.New("GitLab returned no token")
+	}
+	// Tokens expire at the start of their expiry date, in UTC.
+	expires, err := time.Parse(time.DateOnly, created.ExpiresAt)
+	if err != nil {
+		expires, _ = time.Parse(time.DateOnly, expiresAt)
 	}
 	return &Token{Kind: GitLab, Host: f.Host, Project: f.Project, ID: created.ID, Token: created.Token, Expires: expires}, nil
 }

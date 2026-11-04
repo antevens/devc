@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/antevens/devc/internal/config"
@@ -85,19 +84,24 @@ func TestContainerConfig(t *testing.T) {
 		{Kind: GitLab, Host: "gitlab.com", Token: "glpat_1"},
 	}
 
-	wantGit := "[credential]\n\thelper = /opt/devc/git-credential-devc\n" +
+	wantGit := "[credential \"https://github.com\"]\n\thelper = /opt/devc/git-credential-devc\n" +
 		"[url \"https://github.com/\"]\n\tinsteadOf = git@github.com:\n" +
+		"[credential \"https://gitlab.com\"]\n\thelper = /opt/devc/git-credential-devc\n" +
 		"[url \"https://gitlab.com/\"]\n\tinsteadOf = git@gitlab.com:\n"
 	if got := gitConfig(forges, tokens); got != wantGit {
 		t.Errorf("gitConfig:\n%s\nwant:\n%s", got, wantGit)
 	}
-
-	wantEnv := []string{"GITLAB_HOST=gitlab.com", `GITLAB_TOKEN="$(cat /opt/devc/tokens/gitlab.com)"`, "export GITLAB_HOST GITLAB_TOKEN"}
-	if got := Env(tokens); !reflect.DeepEqual(got, wantEnv) {
-		t.Errorf("Env = %q, want %q", got, wantEnv)
+	if got := gitConfig(forges, nil); got != "" {
+		t.Errorf("gitConfig without tokens:\n%s", got)
 	}
-	if strings.Contains(strings.Join(Env(tokens), "\n"), "glpat_1") {
-		t.Error("Env contains the token")
+
+	wantGlab := "git_protocol: https\nhost: gitlab.com\nhosts:\n" +
+		"    gitlab.com:\n        api_host: gitlab.com\n        api_protocol: https\n        token: glpat_1\n"
+	if got := glabConfig(tokens); got != wantGlab {
+		t.Errorf("glabConfig:\n%s\nwant:\n%s", got, wantGlab)
+	}
+	if got := glabConfig(tokens[:1]); got != "" {
+		t.Errorf("glabConfig without GitLab tokens:\n%s", got)
 	}
 
 	wantHosts := "github.com:\n    oauth_token: ghs_1\n    git_protocol: https\n    user: x-access-token\n"
