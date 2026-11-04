@@ -85,6 +85,10 @@ passed to the devcontainer CLI or copied into the running container:
 - `--mount` binds `~/.bash_history` to `/mnt/devc/bash_history`, and sessions
   set `HISTFILE` to it. Mounts only apply when the container is created, so
   run `devc rebuild` for containers created without devc.
+- Missing sources of the config's bind mounts inside your home directory,
+  such as `~/.m2/repository`, are created as directories before the
+  container is created, as `docker run -v` does. Sources elsewhere are left
+  to Docker.
 - `--additional-features` installs claude (and Node.js, which it needs) when
   the config has no claude-code feature. Features the config already has
   keep their options.
@@ -188,7 +192,9 @@ container.
   push to unprotected branches and create, review and comment on merge
   requests. GitLab has no narrower merge request scope, so it can also make
   the project's other Developer level API calls, such as issues. Project
-  access tokens may need a paid tier on gitlab.com.
+  access tokens may need a paid tier on gitlab.com. devc checks the token
+  when a session starts and every 5 minutes while it runs, and replaces it
+  if GitLab rejects it.
 - **GitHub**: GitHub has no API for creating personal access tokens, so the
   credential is a GitHub App. Create one with the repository permissions
   Contents and Pull requests set to read and write, install it on the
@@ -197,11 +203,19 @@ container.
   and are renewed while a session runs. Pushing changes to
   `.github/workflows` needs the Workflows permission, which is not requested.
 
-In the container git uses the token through a credential helper, and SSH
-remotes of the host are rewritten to HTTPS, as SSH keys are not shared. `glab`
-gets `GITLAB_TOKEN` and `GITLAB_HOST` exported. `gh` reads the token from
-`~/.config/gh/hosts.yml`: an exported variable would go stale when the token
-is renewed. `devc rm` revokes the workspace's tokens.
+In the container git uses the token through a credential helper for the
+token's host, and SSH remotes of the host are rewritten to HTTPS, as SSH keys
+are not shared. `gh` reads the token from `~/.config/gh/hosts.yml` and `glab`
+from `~/.config/glab-cli/config.yml`, so shells that are already open use
+renewed tokens. devc replaces both files when a token changes; settings saved
+in them in the container do not last.
+
+A replaced token is revoked once its replacement is in the container. When a
+token cannot be renewed, the container keeps the current one until it
+expires. The error is shown when a session starts and logged to
+`~/.local/state/devc/devc.log` while it runs. Sessions of one workspace renew
+its tokens one at a time, so each repository has a single token. `devc rm`
+revokes the workspace's tokens.
 
 ## Claude apps
 

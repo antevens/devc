@@ -123,11 +123,11 @@ func openLog(home string) (*os.File, error) {
 
 // installSession writes the launcher and the session environment into the
 // container.
-func installSession(c *container.Container, name string, tokens []*forge.Token) error {
+func installSession(c *container.Container, name string) error {
 	a := archive.New(0, c.GID)
 	a.AddDir(archive.Entry(assets.Dir), 0o755)
 	a.AddFile(archive.Entry(assets.LauncherPath), assets.Launcher, 0o755)
-	a.AddFile(archive.Entry(assets.EnvPath), []byte(sessionEnv(name, tokens)), 0o644)
+	a.AddFile(archive.Entry(assets.EnvPath), []byte(sessionEnv(name)), 0o644)
 	data, err := a.Bytes()
 	if err != nil {
 		return err
@@ -140,15 +140,14 @@ func installSession(c *container.Container, name string, tokens []*forge.Token) 
 const scrollSpeed = 12
 
 // sessionEnv returns the session environment: the Remote Control session
-// name prefix, the default claude scroll speed and the forge variables.
-func sessionEnv(name string, tokens []*forge.Token) string {
+// name prefix and the default claude scroll speed.
+func sessionEnv(name string) string {
 	lines := []string{
 		"CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=" + shellQuote(name),
 		"export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX",
 		fmt.Sprintf(`CLAUDE_CODE_SCROLL_SPEED="${CLAUDE_CODE_SCROLL_SPEED:-%d}"`, scrollSpeed),
 		"export CLAUDE_CODE_SCROLL_SPEED",
 	}
-	lines = append(lines, forge.Env(tokens)...)
 	return strings.Join(lines, "\n") + "\n"
 }
 

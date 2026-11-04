@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,27 +19,9 @@ const renewInterval = 5 * time.Minute
 
 // Install gets a token for each forge with a project and installs them in
 // the container with the git credential helper, the git config and the gh
-// config using them. It returns the installed tokens.
-func (fc *Client) Install(ctx context.Context, c *container.Container, forges []Forge) ([]*Token, error) {
-	var tokens []*Token
-	var errs []error
-	for _, f := range forges {
-		if f.Project == "" {
-			continue
-		}
-		tok, err := fc.Get(ctx, f)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if tok != nil {
-			tokens = append(tokens, tok)
-		}
-	}
-	if err := install(c, forges, tokens); err != nil {
-		errs = append(errs, err)
-	}
-	return tokens, errors.Join(errs...)
+// and glab configs using them, then revokes the tokens they replace.
+func (fc *Client) Install(ctx context.Context, c *container.Container, forges []Forge) error {
+	return fc.update(ctx, c, forges, true)
 }
 
 // Renew installs renewed tokens every renewInterval until ctx is done. It
@@ -55,11 +38,69 @@ func (fc *Client) Renew(ctx context.Context, c *container.Container, forges []Fo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := fc.Install(ctx, c, forges); err != nil {
+			if err := fc.update(ctx, c, forges, false); err != nil {
 				log.Warn("renew tokens", "err", err)
 			}
 		}
 	}
+}
+
+// update gets the tokens and installs them in the container, unless force is
+// false and they are the tokens last installed there. Once the container
+// has the tokens, the tokens they replaced are revoked.
+func (fc *Client) update(ctx context.Context, c *container.Container, forges []Forge, force bool) error {
+	unlock, err := fc.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	tokens, err := fc.tokens(ctx, forges)
+	errs := []error{err}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if force || !slices.EqualFunc(tokens, fc.installed[c.ID], sameToken) {
+		delete(fc.installed, c.ID)
+		if err := install(c, forges, tokens); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		if fc.installed == nil {
+			fc.installed = map[string][]*Token{}
+		}
+		fc.installed[c.ID] = tokens
+	}
+	for _, f := range forges {
+		if f.Project != "" {
+			errs = append(errs, fc.revokeRetired(ctx, f))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func sameToken(a, b *Token) bool {
+	return a.Kind == b.Kind && a.Host == b.Host && a.Token == b.Token
+}
+
+// tokens returns a token for each forge with a project and a credential for
+// its host. When getting a token fails, the cached token is used until it
+// expires.
+func (fc *Client) tokens(ctx context.Context, forges []Forge) ([]*Token, error) {
+	var tokens []*Token
+	var errs []error
+	for _, f := range forges {
+		if f.Project == "" {
+			continue
+		}
+		tok, err := fc.get(ctx, f)
+		if err != nil {
+			errs = append(errs, err)
+			tok = fc.usable(f)
+		}
+		if tok != nil {
+			tokens = append(tokens, tok)
+		}
+	}
+	return tokens, errors.Join(errs...)
 }
 
 // configured reports whether any forge has a project and a credential for
@@ -73,24 +114,9 @@ func (fc *Client) configured(forges []Forge) bool {
 	return false
 }
 
-// Env returns shell lines exporting GITLAB_HOST and GITLAB_TOKEN for the
-// first GitLab token.
-func Env(tokens []*Token) []string {
-	for _, tok := range tokens {
-		if tok.Kind == GitLab {
-			return []string{
-				"GITLAB_HOST=" + tok.Host,
-				fmt.Sprintf(`GITLAB_TOKEN="$(cat %s/%s)"`, assets.TokenDir, tok.Host),
-				"export GITLAB_HOST GITLAB_TOKEN",
-			}
-		}
-	}
-	return nil
-}
-
-// install writes the tokens, credential helper, git config and gh config
-// into the container and includes the git config from the system git
-// config.
+// install writes the tokens, credential helper, git config, gh config and
+// glab config into the container and includes the git config from the
+// system git config.
 func install(c *container.Container, forges []Forge, tokens []*Token) error {
 	root := archive.New(0, c.GID)
 	root.AddDir(archive.Entry(assets.Dir), 0o755)
@@ -110,9 +136,14 @@ func install(c *container.Container, forges []Forge, tokens []*Token) error {
 		return err
 	}
 
-	if hosts := ghHosts(tokens); hosts != "" {
+	if hosts, glab := ghHosts(tokens), glabConfig(tokens); hosts != "" || glab != "" {
 		home := archive.New(0, 0)
-		home.AddFile(".config/gh/hosts.yml", []byte(hosts), 0o600)
+		if hosts != "" {
+			home.AddFile(".config/gh/hosts.yml", []byte(hosts), 0o600)
+		}
+		if glab != "" {
+			home.AddFile(".config/glab-cli/config.yml", []byte(glab), 0o600)
+		}
 		data, err := home.Bytes()
 		if err != nil {
 			return err
@@ -135,16 +166,16 @@ git config --system --get-all include.path | grep -qxF "$1" || git config --syst
 	return nil
 }
 
-// gitConfig returns git config using the credential helper and rewriting
-// the SSH URLs of hosts with a token to HTTPS.
+// gitConfig returns git config using the credential helper for the hosts
+// with a token and rewriting their SSH URLs to HTTPS.
 func gitConfig(forges []Forge, tokens []*Token) string {
 	var b strings.Builder
-	b.WriteString("[credential]\n\thelper = " + assets.CredentialHelperPath + "\n")
 	for _, tok := range tokens {
 		for _, f := range forges {
 			if f.Host != tok.Host {
 				continue
 			}
+			fmt.Fprintf(&b, "[credential \"https://%s\"]\n\thelper = %s\n", f.Host, assets.CredentialHelperPath)
 			fmt.Fprintf(&b, "[url \"https://%s/\"]\n", f.Host)
 			for _, ssh := range f.SSHURLs {
 				fmt.Fprintf(&b, "\tinsteadOf = %s\n", ssh)
@@ -162,6 +193,22 @@ func ghHosts(tokens []*Token) string {
 		if tok.Kind == GitHub {
 			fmt.Fprintf(&b, "%s:\n    oauth_token: %s\n    git_protocol: https\n    user: x-access-token\n", tok.Host, tok.Token)
 		}
+	}
+	return b.String()
+}
+
+// glabConfig returns the glab config.yml for the GitLab tokens, with the
+// first token's host as default host, empty if there are none.
+func glabConfig(tokens []*Token) string {
+	var b strings.Builder
+	for _, tok := range tokens {
+		if tok.Kind != GitLab {
+			continue
+		}
+		if b.Len() == 0 {
+			fmt.Fprintf(&b, "git_protocol: https\nhost: %s\nhosts:\n", tok.Host)
+		}
+		fmt.Fprintf(&b, "    %s:\n        api_host: %s\n        api_protocol: https\n        token: %s\n", tok.Host, tok.Host, tok.Token)
 	}
 	return b.String()
 }
