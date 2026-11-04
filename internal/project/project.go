@@ -144,8 +144,9 @@ func (p *Project) Up(ctx context.Context, extra ...string) error {
 	return err
 }
 
-// up runs devcontainer up with the bash history mount and missing features,
-// then provisions the container.
+// up creates missing bind mount sources in the home directory, runs
+// devcontainer up with the bash history mount and missing features, then
+// provisions the container.
 func (p *Project) up(ctx context.Context, extra ...string) (*container.Container, []forge.Forge, error) {
 	args := append([]string{"up"}, p.configArgs(true)...)
 
@@ -155,7 +156,14 @@ func (p *Project) up(ctx context.Context, extra ...string) (*container.Container
 	}
 	args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", history, historyMount))
 
-	features, err := p.missingFeatures(ctx)
+	cfg, err := p.readConfiguration(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := createMountSources(cfg.Mounts, p.home, os.Stderr); err != nil {
+		return nil, nil, err
+	}
+	features, err := featuresFor(cfg.Features)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -177,26 +185,32 @@ func (p *Project) up(ctx context.Context, extra ...string) (*container.Container
 	return c, forges, err
 }
 
-// missingFeatures returns the claude feature, and the Node.js feature unless
-// the config has one, as JSON. It returns nil when the config has a
-// claude-code feature.
-func (p *Project) missingFeatures(ctx context.Context) ([]byte, error) {
+// configuration is the part of a devcontainer config devc reads.
+type configuration struct {
+	Features map[string]any `json:"features"`
+	Mounts   []mount        `json:"mounts"`
+}
+
+// readConfiguration returns the workspace's devcontainer config with local
+// variables substituted.
+func (p *Project) readConfiguration(ctx context.Context) (*configuration, error) {
 	args := append([]string{"read-configuration"}, p.configArgs(false)...)
 	out, err := exec.CommandContext(ctx, "devcontainer", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("devcontainer read-configuration: %w", err)
 	}
 	var result struct {
-		Configuration struct {
-			Features map[string]any `json:"features"`
-		} `json:"configuration"`
+		Configuration configuration `json:"configuration"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil {
 		return nil, fmt.Errorf("parse devcontainer configuration: %w", err)
 	}
-	return featuresFor(result.Configuration.Features)
+	return &result.Configuration, nil
 }
 
+// featuresFor returns the claude feature, and the Node.js feature unless
+// configured has one, as JSON. It returns nil when configured has a
+// claude-code feature.
 func featuresFor(configured map[string]any) ([]byte, error) {
 	hasClaude, hasNode := false, false
 	for id := range configured {

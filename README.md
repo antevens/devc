@@ -85,6 +85,10 @@ passed to the devcontainer CLI or copied into the running container:
 - `--mount` binds `~/.bash_history` to `/mnt/devc/bash_history`, and sessions
   set `HISTFILE` to it. Mounts only apply when the container is created, so
   run `devc rebuild` for containers created without devc.
+- Missing sources of the config's bind mounts inside your home directory,
+  such as `~/.m2/repository`, are created as directories before the
+  container is created, as `docker run -v` does. Sources elsewhere are left
+  to Docker.
 - `--additional-features` installs claude (and Node.js, which it needs) when
   the config has no claude-code feature. Features the config already has
   keep their options.
