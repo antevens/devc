@@ -1,0 +1,21 @@
+// Development container for devc: Go and shellcheck for `make`, node and
+// claude-code as in the shared devc config.
+{
+  "name": "devc",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26"
+    },
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck",
+  "runArgs": [
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "remoteEnv": {
+    "TERM": "xterm-256color",
+    "HISTCONTROL": "erasedups"
+  }
+}
