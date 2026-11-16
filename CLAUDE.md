@@ -24,7 +24,9 @@
 - `internal/config`: devc settings, embedded shared devcontainer config
 - `internal/assets`: files installed in containers, under `files/`
 - `internal/dockershim`: devc as the devcontainer CLI's docker, replacing
-  home directory bind mounts with copies
+  home directory bind mounts with copies and creating containers with
+  sysbox
+- `internal/sysbox`: sysbox runtime detection
 - `internal/archive`: tar archives, in memory or streamed
 - `internal/flock`: exclusive file locks between devc processes
 - `internal/xdg`: XDG base directories

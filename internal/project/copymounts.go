@@ -15,11 +15,13 @@ import (
 	"github.com/antevens/devc/internal/container"
 	"github.com/antevens/devc/internal/dockershim"
 	"github.com/antevens/devc/internal/share"
+	"github.com/antevens/devc/internal/sysbox"
 )
 
 // dockerShim returns the devcontainer CLI arguments and environment that
 // make devc the CLI's docker, which replaces bind mounts of the home
-// directory's hidden entries with copies.
+// directory's hidden entries with copies and, with Sysbox set and the
+// Docker daemon having the sysbox runtime, creates the container with it.
 func (p *Project) dockerShim() ([]string, []string, error) {
 	docker, err := exec.LookPath("docker")
 	if err != nil {
@@ -33,6 +35,14 @@ func (p *Project) dockerShim() ([]string, []string, error) {
 		return nil, nil, err
 	}
 	env := append(os.Environ(), dockershim.Env+"="+docker, dockershim.WorkspaceEnv+"="+p.Workspace)
+	if p.Sysbox {
+		ok, err := sysbox.Available()
+		if err != nil {
+			warn(fmt.Errorf("not using sysbox: %w", err))
+		} else if ok {
+			env = append(env, dockershim.RuntimeEnv+"="+sysbox.Runtime)
+		}
+	}
 	return []string{"--docker-path", devc}, env, nil
 }
 

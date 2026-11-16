@@ -26,6 +26,11 @@ type Container struct {
 	Home string
 	UID  int
 	GID  int
+	// Runtime is the OCI runtime the container was created with, empty for
+	// the daemon's default.
+	Runtime string
+	// Privileged reports whether the container runs with host privileges.
+	Privileged bool
 	// Labels are the container's labels.
 	Labels map[string]string
 	mounts []string
@@ -69,6 +74,10 @@ func Inspect(id string) (*Container, error) {
 			User   string
 			Labels map[string]string
 		}
+		HostConfig struct {
+			Runtime    string
+			Privileged bool
+		}
 		Mounts []struct {
 			Destination string
 		}
@@ -79,7 +88,12 @@ func Inspect(id string) (*Container, error) {
 	if len(result) == 0 {
 		return nil, fmt.Errorf("docker inspect %s: no such container", id)
 	}
-	c := &Container{ID: id, Labels: result[0].Config.Labels}
+	c := &Container{
+		ID:         id,
+		Runtime:    result[0].HostConfig.Runtime,
+		Privileged: result[0].HostConfig.Privileged,
+		Labels:     result[0].Config.Labels,
+	}
 	if c.User, err = remoteUser(result[0].Config.Labels["devcontainer.metadata"], result[0].Config.User); err != nil {
 		return nil, err
 	}

@@ -9,6 +9,10 @@
 // recorded in the container's Label. devc copies the sources that exist into
 // the container instead, so the container gets the files without access to
 // the host's. The workspace folder stays mounted.
+//
+// With RuntimeEnv set, the container is created with that runtime, sysbox,
+// and without --privileged: sysbox gives the container what nested
+// containers need inside a user namespace instead of with host privileges.
 package dockershim
 
 import (
@@ -26,6 +30,8 @@ const (
 	Env = "DEVC_DOCKER"
 	// WorkspaceEnv holds the workspace folder, whose mounts are kept.
 	WorkspaceEnv = "DEVC_WORKSPACE"
+	// RuntimeEnv holds the runtime to create containers with, when set.
+	RuntimeEnv = "DEVC_RUNTIME"
 	// Label is the container label listing the bind mounts removed from its
 	// creation, as JSON.
 	Label = "devc.copied-mounts"
@@ -37,16 +43,27 @@ type Mount struct {
 	Target string `json:"target"`
 }
 
+// Options are the changes Rewrite makes to a container's creation.
+type Options struct {
+	// Home is the host home directory and Workspace the workspace folder,
+	// which select the bind mounts replaced by copies.
+	Home, Workspace string
+	// Runtime, when set, is the runtime the container is created with,
+	// without --privileged, unless the command chooses a runtime itself.
+	Runtime string
+}
+
 // Exec runs the real docker with args rewritten by Rewrite, without the
 // shim's environment variables. It returns only when docker cannot be
 // started.
 func Exec(docker string, args []string) error {
 	home, _ := os.UserHomeDir()
-	argv := append([]string{docker}, Rewrite(args, home, os.Getenv(WorkspaceEnv))...)
+	o := Options{Home: home, Workspace: os.Getenv(WorkspaceEnv), Runtime: os.Getenv(RuntimeEnv)}
+	argv := append([]string{docker}, Rewrite(args, o)...)
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if name != Env && name != WorkspaceEnv {
+		if name != Env && name != WorkspaceEnv && name != RuntimeEnv {
 			env = append(env, kv)
 		}
 	}
@@ -89,12 +106,13 @@ func within(dir, path string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-// Rewrite returns docker arguments with the bind mounts CopyInstead selects
-// removed from `run` and `create` (also as `container run` and `container
-// create`), and listed in Label. Other commands are returned unchanged. Only
-// the options before the image are rewritten; the container's command is
-// left alone.
-func Rewrite(args []string, home, workspace string) []string {
+// Rewrite returns docker arguments with `run` and `create` (also as
+// `container run` and `container create`) changed as o asks: the bind mounts
+// CopyInstead selects are removed and listed in Label, and with o.Runtime
+// set, --runtime is added and --privileged removed. Other commands are
+// returned unchanged. Only the options before the image are rewritten; the
+// container's command is left alone.
+func Rewrite(args []string, o Options) []string {
 	start := 0
 	if len(args) > 0 && args[0] == "container" {
 		start = 1
@@ -105,29 +123,53 @@ func Rewrite(args []string, home, workspace string) []string {
 	start++
 	end, values := parseOptions(args, start)
 
+	runtime := o.Runtime
+	for i := start; i < end && runtime != ""; i++ {
+		if !values[i] && (args[i] == "--runtime" || strings.HasPrefix(args[i], "--runtime=")) {
+			runtime = ""
+		}
+	}
+
 	var copied []Mount
 	kept := make([]string, 0, len(args))
 	for i := start; i < end; i++ {
+		if runtime != "" && !values[i] && privileged(args[i]) {
+			continue
+		}
 		m, width, ok := mountAt(args, i, values)
-		if ok && CopyInstead(m.Source, home, workspace) {
+		if ok && CopyInstead(m.Source, o.Home, o.Workspace) {
 			copied = append(copied, m)
 			i += width - 1
 			continue
 		}
 		kept = append(kept, args[i])
 	}
-	if len(copied) == 0 {
+	if len(copied) == 0 && runtime == "" {
 		return args
 	}
-	label, err := json.Marshal(copied)
-	if err != nil {
-		return args
-	}
-	out := make([]string, 0, len(args)+2)
+	out := make([]string, 0, len(args)+3)
 	out = append(out, args[:start]...)
-	out = append(out, "--label", Label+"="+string(label))
+	if runtime != "" {
+		out = append(out, "--runtime="+runtime)
+	}
+	if len(copied) > 0 {
+		label, err := json.Marshal(copied)
+		if err != nil {
+			return args
+		}
+		out = append(out, "--label", Label+"="+string(label))
+	}
 	out = append(out, kept...)
 	return append(out, args[end:]...)
+}
+
+// privileged reports whether a is an option making the container privileged.
+func privileged(a string) bool {
+	switch a {
+	case "--privileged", "--privileged=true", "--privileged=1":
+		return true
+	}
+	return false
 }
 
 // mountAt returns the bind mount given by the option at args[i], and the

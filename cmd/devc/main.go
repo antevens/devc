@@ -18,7 +18,7 @@ import (
 // version is set with -ldflags "-X main.version=...".
 var version string
 
-const usage = `Usage: devc [--no-history] <command> [args...]
+const usage = `Usage: devc [--no-history] [--no-sysbox] <command> [args...]
        devc --help | --version
 
 Commands:
@@ -44,12 +44,18 @@ Commands:
 
 Options:
   --no-history   Don't share bash history with the host
+  --no-sysbox    Create containers with Docker's default runtime even when
+                 sysbox is installed
   -h, --help     Show this help
   -V, --version  Show the devc version
 
 The workspace is the git top-level of the current directory, or the current
 directory outside a git repository. Repositories without their own
 devcontainer.json use the shared config, set DEVC_CONFIG to use another one.
+
+When Docker has the sysbox runtime, containers are created with it: they
+can run docker and kind without host privileges, and root in them is an
+unprivileged user on the host.
 
 Your git config, Claude Code settings, credentials and ~/.ai preferences are
 copied into the container. Your bash history is readable in the container's
@@ -66,7 +72,8 @@ var commands = []string{"up", "start", "shell", "claude", "remote", "update", "r
 
 func main() {
 	// devc runs as the devcontainer CLI's docker to replace bind mounts of
-	// the home directory with copies; see package dockershim.
+	// the home directory with copies and create containers with sysbox; see
+	// package dockershim.
 	if docker := os.Getenv(dockershim.Env); docker != "" {
 		err := dockershim.Exec(docker, os.Args[1:])
 		fmt.Fprintf(os.Stderr, "devc: run %s: %v\n", docker, err)
@@ -77,10 +84,17 @@ func main() {
 
 // run executes a devc command and returns the process exit code.
 func run(ctx context.Context, args []string) int {
-	history := true
-	for len(args) > 0 && args[0] == "--no-history" {
-		history = false
-		args = args[1:]
+	history, useSysbox := true, true
+options:
+	for ; len(args) > 0; args = args[1:] {
+		switch args[0] {
+		case "--no-history":
+			history = false
+		case "--no-sysbox":
+			useSysbox = false
+		default:
+			break options
+		}
 	}
 	command := ""
 	if len(args) > 0 {
@@ -107,6 +121,7 @@ func run(ctx context.Context, args []string) int {
 		return report(err)
 	}
 	p.History = history
+	p.Sysbox = useSysbox
 
 	switch command {
 	case "up", "start":

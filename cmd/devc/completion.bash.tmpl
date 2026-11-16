@@ -13,7 +13,7 @@ function _devc_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
   if [[ "${COMP_CWORD}" -eq 1 ]]; then
-    mapfile -t COMPREPLY < <(compgen -W "{{.}} --no-history --help --version" -- "${cur}")
+    mapfile -t COMPREPLY < <(compgen -W "{{.}} --no-history --no-sysbox --help --version" -- "${cur}")
   elif [[ "${COMP_WORDS[1]}" == "rm" ]]; then
     local names
     names="$(docker ps --all --filter label=devcontainer.local_folder \

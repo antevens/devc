@@ -19,6 +19,7 @@ import (
 	"github.com/antevens/devc/internal/dockershim"
 	"github.com/antevens/devc/internal/forge"
 	"github.com/antevens/devc/internal/share"
+	"github.com/antevens/devc/internal/sysbox"
 	"github.com/antevens/devc/internal/xdg"
 )
 
@@ -46,8 +47,11 @@ type Project struct {
 	// readable in the container's shells and their commands are appended to
 	// it.
 	History bool
-	home    string
-	forges  *forge.Client
+	// Sysbox creates the container with the sysbox runtime when the Docker
+	// daemon has it.
+	Sysbox bool
+	home   string
+	forges *forge.Client
 }
 
 // New returns the project for the workspace of the current directory: its
@@ -63,6 +67,7 @@ func New(home, sharedConfig string, s config.Settings) (*Project, error) {
 		SharedConfig: sharedConfig,
 		Settings:     s,
 		History:      true,
+		Sysbox:       true,
 		home:         home,
 		forges:       forge.NewClient(s, home, workspace),
 	}, nil
@@ -150,9 +155,10 @@ func (p *Project) Up(ctx context.Context, extra ...string) error {
 
 // up runs devcontainer up with the missing features and devc as the CLI's
 // docker, which replaces bind mounts of the home directory's hidden entries
-// with copies. It copies those into a new container before running the
-// lifecycle commands, so they find the files where the mounts would have
-// put them, then provisions the container.
+// with copies and, with Sysbox set and sysbox installed, creates the
+// container with the sysbox runtime. It copies the replaced mounts into a
+// new container before running the lifecycle commands, so they find the
+// files where the mounts would have put them, then provisions the container.
 func (p *Project) up(ctx context.Context, extra ...string) (*container.Container, []forge.Forge, error) {
 	args := append([]string{"up"}, p.configArgs(true)...)
 
@@ -270,6 +276,9 @@ func (p *Project) RemoteCommand(args []string) []string {
 // copying the shared files and installing the session files are written to
 // stderr. It returns the workspace's forges.
 func (p *Project) provision(ctx context.Context, c *container.Container) ([]forge.Forge, error) {
+	if c.Privileged && c.Runtime != sysbox.Runtime {
+		warn(errors.New("the container runs privileged without sysbox, so root in it is root on the host; with sysbox installed, devc rebuild recreates it under sysbox"))
+	}
 	if err := p.copyMounts(c); err != nil {
 		warn(err)
 	}
