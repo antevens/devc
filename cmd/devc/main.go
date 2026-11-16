@@ -12,12 +12,13 @@ import (
 
 	"github.com/antevens/devc/internal/config"
 	"github.com/antevens/devc/internal/project"
+	"github.com/antevens/devc/internal/sysbox"
 )
 
 // version is set with -ldflags "-X main.version=...".
 var version string
 
-const usage = `Usage: devc <command> [args...]
+const usage = `Usage: devc [--no-sysbox] <command> [args...]
        devc --help | --version
 
 Commands:
@@ -42,12 +43,18 @@ Commands:
               source <(devc completion bash)
 
 Options:
+  --no-sysbox    Create containers with Docker's default runtime even when
+                 sysbox is installed
   -h, --help     Show this help
   -V, --version  Show the devc version
 
 The workspace is the git top-level of the current directory, or the current
 directory outside a git repository. Repositories without their own
 devcontainer.json use the shared config, set DEVC_CONFIG to use another one.
+
+When Docker has the sysbox runtime, containers are created with it: they
+can run docker and kind without host privileges, and root in them is an
+unprivileged user on the host.
 
 Your shell history, git config, Claude Code settings, credentials and
 ~/.ai preferences are shared with the container. When claude is started
@@ -62,11 +69,23 @@ in ~/.config/devc/config.json, a token limited to the repository.
 var commands = []string{"up", "start", "shell", "claude", "remote", "update", "rebuild", "stop", "down", "rm", "init", "ls", "completion", "help"}
 
 func main() {
+	// devc runs as the devcontainer CLI's docker to create containers with
+	// sysbox; see package sysbox.
+	if docker := os.Getenv(sysbox.ShimEnv); docker != "" {
+		err := sysbox.Shim(docker, os.Args[1:])
+		fmt.Fprintf(os.Stderr, "devc: run %s: %v\n", docker, err)
+		os.Exit(127)
+	}
 	os.Exit(run(context.Background(), os.Args[1:]))
 }
 
 // run executes a devc command and returns the process exit code.
 func run(ctx context.Context, args []string) int {
+	useSysbox := true
+	for len(args) > 0 && args[0] == "--no-sysbox" {
+		useSysbox = false
+		args = args[1:]
+	}
 	command := ""
 	if len(args) > 0 {
 		command, args = args[0], args[1:]
@@ -91,6 +110,7 @@ func run(ctx context.Context, args []string) int {
 	if err != nil {
 		return report(err)
 	}
+	p.Sysbox = useSysbox
 
 	switch command {
 	case "up", "start":

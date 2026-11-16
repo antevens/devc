@@ -18,6 +18,7 @@ import (
 	"github.com/antevens/devc/internal/container"
 	"github.com/antevens/devc/internal/forge"
 	"github.com/antevens/devc/internal/share"
+	"github.com/antevens/devc/internal/sysbox"
 	"github.com/antevens/devc/internal/xdg"
 )
 
@@ -43,8 +44,11 @@ type Project struct {
 	// SharedConfig is used when the workspace has no devcontainer.json.
 	SharedConfig string
 	Settings     config.Settings
-	home         string
-	forges       *forge.Client
+	// Sysbox creates the container with the sysbox runtime when the Docker
+	// daemon has it.
+	Sysbox bool
+	home   string
+	forges *forge.Client
 }
 
 // New returns the project for the workspace of the current directory: its
@@ -59,6 +63,7 @@ func New(home, sharedConfig string, s config.Settings) (*Project, error) {
 		Workspace:    workspace,
 		SharedConfig: sharedConfig,
 		Settings:     s,
+		Sysbox:       true,
 		home:         home,
 		forges:       forge.NewClient(s, home, workspace),
 	}, nil
@@ -171,7 +176,18 @@ func (p *Project) up(ctx context.Context, extra ...string) (*container.Container
 		args = append(args, "--additional-features", string(features))
 	}
 
-	if err := attached(ctx, "devcontainer", append(args, extra...)...); err != nil {
+	cmd := exec.CommandContext(ctx, "devcontainer")
+	if p.Sysbox {
+		shim, err := sysboxShim()
+		if err != nil {
+			warn(fmt.Errorf("not using sysbox: %w", err))
+		} else if shim != nil {
+			args = append(args, "--docker-path", shim.devc)
+			cmd.Env = append(os.Environ(), sysbox.ShimEnv+"="+shim.docker)
+		}
+	}
+	cmd.Args = append(append([]string{"devcontainer"}, args...), extra...)
+	if err := runAttached(cmd); err != nil {
 		return nil, nil, err
 	}
 	c, err := container.Find(p.Workspace)
@@ -249,6 +265,9 @@ func (p *Project) RemoteCommand(args []string) []string {
 // copying the shared files and installing the session files are written to
 // stderr. It returns the workspace's forges.
 func (p *Project) provision(ctx context.Context, c *container.Container) ([]forge.Forge, error) {
+	if c.Privileged && c.Runtime != sysbox.Runtime {
+		warn(errors.New("the container runs privileged without sysbox, so root in it is root on the host; with sysbox installed, devc rebuild recreates it under sysbox"))
+	}
 	installed, err := c.Install(requiredCommands...)
 	if err != nil {
 		warn(fmt.Errorf("install %s: %w", strings.Join(requiredCommands, ", "), err))
@@ -274,9 +293,43 @@ func (p *Project) provision(ctx context.Context, c *container.Container) ([]forg
 
 // attached runs a command attached to the terminal.
 func attached(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	return runAttached(exec.CommandContext(ctx, name, args...))
+}
+
+// runAttached runs cmd attached to the terminal.
+func runAttached(cmd *exec.Cmd) error {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return commandError(name, cmd.Run())
+	return commandError(cmd.Args[0], cmd.Run())
+}
+
+// shim is the docker executable devc gives the devcontainer CLI so that
+// containers are created with the sysbox runtime.
+type shim struct {
+	// devc is devc's own executable, run by the CLI as docker.
+	devc string
+	// docker is the real docker executable the shim runs.
+	docker string
+}
+
+// sysboxShim returns the docker shim when the Docker daemon has the sysbox
+// runtime, nil when it has not.
+func sysboxShim() (*shim, error) {
+	ok, err := sysbox.Available()
+	if err != nil || !ok {
+		return nil, err
+	}
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		return nil, err
+	}
+	if docker, err = filepath.Abs(docker); err != nil {
+		return nil, err
+	}
+	devc, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return &shim{devc: devc, docker: docker}, nil
 }
 
 // commandError returns err, naming the command when it is not in PATH.

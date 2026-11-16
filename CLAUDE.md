@@ -23,6 +23,8 @@
 - `internal/release`: checksum verified release downloads
 - `internal/config`: devc settings, embedded shared devcontainer config
 - `internal/assets`: files installed in containers, under `files/`
+- `internal/sysbox`: sysbox detection and the docker shim that creates
+  containers with it
 - `internal/archive`: in-memory tar archives
 - `internal/xdg`: XDG base directories
 

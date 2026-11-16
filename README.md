@@ -15,6 +15,8 @@ project's.
   `npm install -g @devcontainers/cli`
 - `xclip`, `xsel` or `wl-clipboard` on the host to copy from containers to
   the clipboard
+- Optional, Linux: [sysbox](https://github.com/nestybox/sysbox), to run
+  docker-in-docker and kind without host privileges
 - Go 1.26 to build
 - shellcheck for `make lint`
 
@@ -48,6 +50,10 @@ devc rm [-y] [name|id...]
                    confirmation, and revoke their repository tokens
 devc init          Copy the shared config into .devcontainer/ to customise it
 devc ls            List all devcontainers with their IDs and names
+
+devc --no-sysbox <command>
+                   Create containers with Docker's default runtime even when
+                   sysbox is installed
 ```
 
 The workspace is the git top-level of the current directory. Outside a git
@@ -70,6 +76,31 @@ not devcontainers are refused.
 For Docker Compose configs the other containers and the networks of the
 Compose project are removed too. Named volumes are kept. `devc stop` stops
 the whole Compose project.
+
+## Sysbox
+
+Features such as docker-in-docker run the container privileged: root in it,
+which the remote user usually reaches with `sudo`, is root on the host. When
+Docker has the [sysbox](https://github.com/nestybox/sysbox) runtime, devc
+creates containers with it instead. Sysbox gives the container what nested
+containers need, such as running docker and kind, inside a user namespace,
+so root in the container is an unprivileged user on the host.
+
+The devcontainer CLI has no option for the runtime, so devc passes itself as
+the CLI's docker executable. It adds `--runtime=sysbox-runc` to the
+`docker run` that creates the container and removes `--privileged`, and runs
+every other docker command unchanged. A config that chooses a runtime in
+`runArgs` keeps it.
+
+- Install sysbox on the host once; devc detects it with `docker info`.
+- The runtime is chosen when a container is created: run `devc rebuild` for
+  containers created before.
+- Docker Compose configs are created by `docker compose` and keep Docker's
+  default runtime.
+- `--no-sysbox` creates the container with Docker's default runtime.
+
+Whenever a container runs privileged outside sysbox, devc warns at the start
+of each session.
 
 ## Tools in every devcontainer
 
@@ -254,5 +285,6 @@ make fmt      # gofmt -s -w .
 | `internal/release` | Checksum verified release downloads |
 | `internal/config` | devc settings and the shared devcontainer config |
 | `internal/assets` | Files installed in containers and their paths |
+| `internal/sysbox` | Sysbox detection and the docker shim that creates containers with it |
 | `internal/archive` | In-memory tar archives |
 | `internal/xdg` | XDG base directories |

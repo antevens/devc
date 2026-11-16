@@ -17,12 +17,17 @@ const FolderLabel = "devcontainer.local_folder"
 // Container is a running devcontainer and the user devcontainer exec runs
 // commands as.
 type Container struct {
-	ID     string
-	User   string
-	Home   string
-	UID    int
-	GID    int
-	mounts []string
+	ID   string
+	User string
+	Home string
+	UID  int
+	GID  int
+	// Runtime is the OCI runtime the container was created with, empty for
+	// the daemon's default.
+	Runtime string
+	// Privileged reports whether the container runs with host privileges.
+	Privileged bool
+	mounts     []string
 }
 
 // FindID returns the ID of the workspace's running container, or of any of
@@ -63,6 +68,10 @@ func Inspect(id string) (*Container, error) {
 			User   string
 			Labels map[string]string
 		}
+		HostConfig struct {
+			Runtime    string
+			Privileged bool
+		}
 		Mounts []struct {
 			Destination string
 		}
@@ -73,7 +82,7 @@ func Inspect(id string) (*Container, error) {
 	if len(result) == 0 {
 		return nil, fmt.Errorf("docker inspect %s: no such container", id)
 	}
-	c := &Container{ID: id}
+	c := &Container{ID: id, Runtime: result[0].HostConfig.Runtime, Privileged: result[0].HostConfig.Privileged}
 	if c.User, err = remoteUser(result[0].Config.Labels["devcontainer.metadata"], result[0].Config.User); err != nil {
 		return nil, err
 	}
