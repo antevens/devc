@@ -44,71 +44,46 @@ func TestConfigurationMountsInvalid(t *testing.T) {
 	}
 }
 
-func TestCreateMountSources(t *testing.T) {
+func TestCheckMountSources(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	existing := filepath.Join(home, ".claude.json")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	existing := filepath.Join(root, ".claude.json")
 	if err := os.WriteFile(existing, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dangling := filepath.Join(home, ".dangling")
-	if err := os.Symlink(filepath.Join(root, "missing"), dangling); err != nil {
+	dangling := filepath.Join(root, ".dangling")
+	if err := os.Symlink(filepath.Join(root, "gone"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	missing := filepath.Join(home, ".m2", "repository")
-	outside := filepath.Join(root, "outside")
-	volume := filepath.Join(home, ".volume")
-	mounts := []mount{
+	missing := filepath.Join(root, ".m2", "repository")
+	volume := filepath.Join(root, ".volume")
+
+	if err := checkMountSources([]mount{
+		{Type: "bind", Source: existing},
+		{Type: "bind", Source: "relative"},
+		{Type: "volume", Source: volume},
+	}); err != nil {
+		t.Errorf("existing sources: %v", err)
+	}
+
+	err := checkMountSources([]mount{
 		{Type: "bind", Source: missing},
 		{Type: "bind", Source: existing},
 		{Type: "bind", Source: dangling},
-		{Type: "bind", Source: outside},
-		{Type: "bind", Source: filepath.Join(home, "..", "escape")},
-		{Type: "bind", Source: "relative"},
-		{Type: "volume", Source: volume},
+	})
+	if err == nil {
+		t.Fatal("missing sources: want an error")
 	}
-
-	var out strings.Builder
-	if err := createMountSources(mounts, home, &out); err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
-		t.Errorf("%s: not created as a directory: %v", missing, err)
-	}
-	if info, err := os.Stat(existing); err != nil || !info.Mode().IsRegular() {
-		t.Errorf("%s: changed: %v", existing, err)
-	}
-	if _, err := os.Readlink(dangling); err != nil {
-		t.Errorf("%s: changed: %v", dangling, err)
-	}
-	for _, path := range []string{outside, filepath.Join(root, "escape"), volume, filepath.Join(home, "relative")} {
-		if _, err := os.Lstat(path); err == nil {
-			t.Errorf("%s: created", path)
+	for _, path := range []string{missing, dangling} {
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("error %q does not name %s", err, path)
 		}
 	}
-	if want := "devc: created missing mount source " + missing + "\n"; out.String() != want {
-		t.Errorf("got output %q, want %q", out.String(), want)
+	if strings.Contains(err.Error(), existing+",") || strings.HasSuffix(err.Error(), existing) {
+		t.Errorf("error %q names the existing source", err)
 	}
-}
-
-func TestWithin(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"/home/u", true},
-		{"/home/u/.m2/repository", true},
-		{"/home/u/../v", false},
-		{"/home/user", false},
-		{"/var/run/docker.sock", false},
-		{"u/.m2", false},
-	}
-	for _, tt := range tests {
-		if got := within("/home/u", tt.path); got != tt.want {
-			t.Errorf("within(/home/u, %s) = %v, want %v", tt.path, got, tt.want)
+	for _, path := range []string{missing, filepath.Dir(missing)} {
+		if _, err := os.Lstat(path); err == nil {
+			t.Errorf("%s: created", path)
 		}
 	}
 }

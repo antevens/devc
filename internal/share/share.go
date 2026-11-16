@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/antevens/devc/internal/archive"
+	"github.com/antevens/devc/internal/assets"
 	"github.com/antevens/devc/internal/container"
 )
 
@@ -43,41 +45,117 @@ var Trees = []Tree{
 // files are copied when a session starts.
 var files = []string{".claude.json", ".gitconfig"}
 
-// Sync copies the shared trees and files into the remote user's home
-// directory. Problems with optional files are written to warnings.
-func Sync(c *container.Container, home string, warnings io.Writer) error {
-	a := archive.New(0, 0)
-	if err := addTrees(a, home, Trees); err != nil {
-		return err
+// Copies reports whether Sync copies the host path source to the container
+// path target: both are the same entry of the host and container home
+// directories, under a top-level entry Sync copies with its own rules. A
+// mount of ~/.docker is one: Sync shares only the filtered docker config.
+func Copies(source, target, home, containerHome string) bool {
+	hostRel, err := filepath.Rel(home, source)
+	if err != nil || !filepath.IsLocal(hostRel) {
+		return false
+	}
+	containerRel, err := filepath.Rel(containerHome, target)
+	if err != nil || !filepath.IsLocal(containerRel) || filepath.ToSlash(hostRel) != filepath.ToSlash(containerRel) {
+		return false
+	}
+	first, _, _ := strings.Cut(filepath.ToSlash(hostRel), "/")
+	if first == ".docker" {
+		return true
+	}
+	for _, t := range Trees {
+		if first == t.Name {
+			return true
+		}
 	}
 	for _, name := range files {
+		if first == name {
+			return true
+		}
+	}
+	return false
+}
+
+// kubeFragment is where the host cluster's kubeconfig is copied in the
+// container, relative to the remote user's home directory, before it is
+// merged into ~/.kube/config.
+const kubeFragment = ".local/state/devc/host.kubeconfig"
+
+// Sync copies the shared trees and files into the remote user's home
+// directory and merges the kubeconfig of microk8s on the host into
+// ~/.kube/config. Entries the container mounts are left out, as copying them
+// would write into the mount. Problems with optional files are written to
+// warnings.
+func Sync(c *container.Container, home string, warnings io.Writer) error {
+	a := archive.New(0, 0)
+	for _, t := range Trees {
+		if mounted(c, t.Name, warnings) {
+			continue
+		}
+		if err := a.AddTree(t.Name, filepath.Join(home, t.Name), t.Skip); err != nil {
+			return err
+		}
+	}
+	for _, name := range files {
+		if mounted(c, name, warnings) {
+			continue
+		}
 		if err := a.AddTree(name, filepath.Join(home, name), nil); err != nil {
 			return err
 		}
 	}
-	if err := addDockerConfig(a, home); err != nil {
-		fmt.Fprintf(warnings, "devc: not sharing docker config: %v\n", err)
+	if !mounted(c, ".docker", warnings) {
+		if err := addDockerConfig(a, home); err != nil {
+			fmt.Fprintf(warnings, "devc: not sharing docker config: %v\n", err)
+		}
 	}
-	if config := microk8sConfig(); config != nil {
-		a.AddFile(".kube/config", config, 0o600)
+	kubeconfig := microk8sConfig()
+	if kubeconfig != nil && (mounted(c, ".kube", warnings) || mounted(c, kubeFragment, warnings)) {
+		kubeconfig = nil
 	}
-	return extract(c, a)
+	if kubeconfig != nil {
+		a.AddFile(kubeFragment, kubeconfig, 0o600)
+	}
+	if err := extract(c, a); err != nil {
+		return err
+	}
+	if kubeconfig != nil {
+		if err := mergeKubeconfig(c); err != nil {
+			fmt.Fprintf(warnings, "devc: not merging the microk8s kubeconfig: %v\n", err)
+		}
+	}
+	return nil
 }
 
-// SyncTree copies one shared tree into the remote user's home directory.
+// SyncTree copies one shared tree into the remote user's home directory,
+// unless the container mounts it.
 func SyncTree(c *container.Container, home string, t Tree) error {
+	if c.Overlaps(path.Join(c.Home, t.Name)) {
+		return nil
+	}
 	a := archive.New(0, 0)
-	if err := addTrees(a, home, []Tree{t}); err != nil {
+	if err := a.AddTree(t.Name, filepath.Join(home, t.Name), t.Skip); err != nil {
 		return err
 	}
 	return extract(c, a)
 }
 
-func addTrees(a *archive.Archive, home string, trees []Tree) error {
-	for _, t := range trees {
-		if err := a.AddTree(t.Name, filepath.Join(home, t.Name), t.Skip); err != nil {
-			return err
-		}
+// mounted reports whether the home directory entry name overlaps a mount of
+// the container, and warns when it does.
+func mounted(c *container.Container, name string, warnings io.Writer) bool {
+	target := path.Join(c.Home, name)
+	if !c.Overlaps(target) {
+		return false
+	}
+	fmt.Fprintf(warnings, "devc: not copying ~/%s: %s overlaps a mount in the container\n", name, target)
+	return true
+}
+
+// mergeKubeconfig merges the copied host kubeconfig into ~/.kube/config in
+// the container, keeping its current context.
+func mergeKubeconfig(c *container.Container) error {
+	out, err := c.Run(c.User, "bash", "-c", string(assets.MergeKubeconfig), "merge-kubeconfig", path.Join(c.Home, kubeFragment))
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

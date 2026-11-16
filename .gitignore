@@ -1,1 +1,3 @@
 /bin/
+# Written into the working directory by devc's Claude Code Stop hook.
+.claude.log

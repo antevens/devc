@@ -16,14 +16,13 @@ import (
 	"github.com/antevens/devc/internal/claude"
 	"github.com/antevens/devc/internal/config"
 	"github.com/antevens/devc/internal/container"
+	"github.com/antevens/devc/internal/dockershim"
 	"github.com/antevens/devc/internal/forge"
 	"github.com/antevens/devc/internal/share"
 	"github.com/antevens/devc/internal/xdg"
 )
 
 const (
-	// historyMount is the container path of the host's bash history.
-	historyMount = "/mnt/devc/bash_history"
 	// claudeFeature installs claude in containers whose config lacks it.
 	claudeFeature = "ghcr.io/anthropics/devcontainer-features/claude-code:1"
 	// nodeFeature is added with claudeFeature, which requires Node.js.
@@ -43,8 +42,12 @@ type Project struct {
 	// SharedConfig is used when the workspace has no devcontainer.json.
 	SharedConfig string
 	Settings     config.Settings
-	home         string
-	forges       *forge.Client
+	// History shares bash history with the host: the host's history is
+	// readable in the container's shells and their commands are appended to
+	// it.
+	History bool
+	home    string
+	forges  *forge.Client
 }
 
 // New returns the project for the workspace of the current directory: its
@@ -59,6 +62,7 @@ func New(home, sharedConfig string, s config.Settings) (*Project, error) {
 		Workspace:    workspace,
 		SharedConfig: sharedConfig,
 		Settings:     s,
+		History:      true,
 		home:         home,
 		forges:       forge.NewClient(s, home, workspace),
 	}, nil
@@ -144,23 +148,25 @@ func (p *Project) Up(ctx context.Context, extra ...string) error {
 	return err
 }
 
-// up creates missing bind mount sources in the home directory, runs
-// devcontainer up with the bash history mount and missing features, then
-// provisions the container.
+// up runs devcontainer up with the missing features and devc as the CLI's
+// docker, which replaces bind mounts of the home directory's hidden entries
+// with copies. It copies those into a new container before running the
+// lifecycle commands, so they find the files where the mounts would have
+// put them, then provisions the container.
 func (p *Project) up(ctx context.Context, extra ...string) (*container.Container, []forge.Forge, error) {
 	args := append([]string{"up"}, p.configArgs(true)...)
-
-	history := filepath.Join(p.home, ".bash_history")
-	if err := touch(history); err != nil {
-		return nil, nil, err
-	}
-	args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", history, historyMount))
 
 	cfg, err := p.readConfiguration(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := createMountSources(cfg.Mounts, p.home, os.Stderr); err != nil {
+	var mounted []mount
+	for _, m := range cfg.Mounts {
+		if !dockershim.CopyInstead(m.Source, p.home, p.Workspace) {
+			mounted = append(mounted, m)
+		}
+	}
+	if err := checkMountSources(mounted); err != nil {
 		return nil, nil, err
 	}
 	features, err := featuresFor(cfg.Features)
@@ -171,7 +177,15 @@ func (p *Project) up(ctx context.Context, extra ...string) (*container.Container
 		args = append(args, "--additional-features", string(features))
 	}
 
-	if err := attached(ctx, "devcontainer", append(args, extra...)...); err != nil {
+	shimArgs, env, err := p.dockerShim()
+	if err != nil {
+		return nil, nil, fmt.Errorf("run devc as the devcontainer CLI's docker: %w", err)
+	}
+	args = append(append(args, shimArgs...), "--skip-post-create")
+	cmd := exec.CommandContext(ctx, "devcontainer")
+	cmd.Args = append(append([]string{"devcontainer"}, args...), extra...)
+	cmd.Env = env
+	if err := runAttached(cmd); err != nil {
 		return nil, nil, err
 	}
 	c, err := container.Find(p.Workspace)
@@ -180,6 +194,13 @@ func (p *Project) up(ctx context.Context, extra ...string) (*container.Container
 	}
 	if c == nil {
 		return nil, nil, fmt.Errorf("no running container for %s after devcontainer up", p.Workspace)
+	}
+	if err := p.copyMounts(c); err != nil {
+		return nil, nil, err
+	}
+	user := append([]string{"run-user-commands"}, p.configArgs(false)...)
+	if err := attached(ctx, "devcontainer", append(user, "--skip-post-attach")...); err != nil {
+		return nil, nil, err
 	}
 	forges, err := p.provision(ctx, c)
 	return c, forges, err
@@ -249,6 +270,9 @@ func (p *Project) RemoteCommand(args []string) []string {
 // copying the shared files and installing the session files are written to
 // stderr. It returns the workspace's forges.
 func (p *Project) provision(ctx context.Context, c *container.Container) ([]forge.Forge, error) {
+	if err := p.copyMounts(c); err != nil {
+		warn(err)
+	}
 	installed, err := c.Install(requiredCommands...)
 	if err != nil {
 		warn(fmt.Errorf("install %s: %w", strings.Join(requiredCommands, ", "), err))
@@ -274,9 +298,13 @@ func (p *Project) provision(ctx context.Context, c *container.Container) ([]forg
 
 // attached runs a command attached to the terminal.
 func attached(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	return runAttached(exec.CommandContext(ctx, name, args...))
+}
+
+// runAttached runs cmd attached to the terminal.
+func runAttached(cmd *exec.Cmd) error {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return commandError(name, cmd.Run())
+	return commandError(cmd.Args[0], cmd.Run())
 }
 
 // commandError returns err, naming the command when it is not in PATH.
@@ -289,13 +317,4 @@ func commandError(name string, err error) error {
 
 func warn(err error) {
 	fmt.Fprintf(os.Stderr, "devc: %v\n", err)
-}
-
-// touch creates path if it does not exist.
-func touch(path string) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	return f.Close()
 }
