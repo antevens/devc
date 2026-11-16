@@ -11,14 +11,14 @@ import (
 	"runtime/debug"
 
 	"github.com/antevens/devc/internal/config"
+	"github.com/antevens/devc/internal/dockershim"
 	"github.com/antevens/devc/internal/project"
-	"github.com/antevens/devc/internal/sysbox"
 )
 
 // version is set with -ldflags "-X main.version=...".
 var version string
 
-const usage = `Usage: devc [--no-sysbox] <command> [args...]
+const usage = `Usage: devc [--no-history] [--no-sysbox] <command> [args...]
        devc --help | --version
 
 Commands:
@@ -43,6 +43,7 @@ Commands:
               source <(devc completion bash)
 
 Options:
+  --no-history   Don't share bash history with the host
   --no-sysbox    Create containers with Docker's default runtime even when
                  sysbox is installed
   -h, --help     Show this help
@@ -56,10 +57,11 @@ When Docker has the sysbox runtime, containers are created with it: they
 can run docker and kind without host privileges, and root in them is an
 unprivileged user on the host.
 
-Your shell history, git config, Claude Code settings, credentials and
-~/.ai preferences are shared with the container. When claude is started
-by devc your Claude settings and instructions take precedence over the
-project's.
+Your git config, Claude Code settings, credentials and ~/.ai preferences are
+copied into the container. Your bash history is readable in the container's
+shells and the commands typed there are appended to it, without the
+container having access to the history file. When claude is started by devc
+your Claude settings and instructions take precedence over the project's.
 
 GitHub and GitLab repositories get gh or glab installed and, when configured
 in ~/.config/devc/config.json, a token limited to the repository.
@@ -69,10 +71,11 @@ in ~/.config/devc/config.json, a token limited to the repository.
 var commands = []string{"up", "start", "shell", "claude", "remote", "update", "rebuild", "stop", "down", "rm", "init", "ls", "completion", "help"}
 
 func main() {
-	// devc runs as the devcontainer CLI's docker to create containers with
-	// sysbox; see package sysbox.
-	if docker := os.Getenv(sysbox.ShimEnv); docker != "" {
-		err := sysbox.Shim(docker, os.Args[1:])
+	// devc runs as the devcontainer CLI's docker to replace bind mounts of
+	// the home directory with copies and create containers with sysbox; see
+	// package dockershim.
+	if docker := os.Getenv(dockershim.Env); docker != "" {
+		err := dockershim.Exec(docker, os.Args[1:])
 		fmt.Fprintf(os.Stderr, "devc: run %s: %v\n", docker, err)
 		os.Exit(127)
 	}
@@ -81,10 +84,17 @@ func main() {
 
 // run executes a devc command and returns the process exit code.
 func run(ctx context.Context, args []string) int {
-	useSysbox := true
-	for len(args) > 0 && args[0] == "--no-sysbox" {
-		useSysbox = false
-		args = args[1:]
+	history, useSysbox := true, true
+options:
+	for ; len(args) > 0; args = args[1:] {
+		switch args[0] {
+		case "--no-history":
+			history = false
+		case "--no-sysbox":
+			useSysbox = false
+		default:
+			break options
+		}
 	}
 	command := ""
 	if len(args) > 0 {
@@ -110,6 +120,7 @@ func run(ctx context.Context, args []string) int {
 	if err != nil {
 		return report(err)
 	}
+	p.History = history
 	p.Sysbox = useSysbox
 
 	switch command {

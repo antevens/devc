@@ -3,10 +3,11 @@
 Create, start and attach to devcontainers for the current git repository, and run
 a shell or Claude Code inside them.
 
-Your shell history, git config, Claude Code settings, credentials, and
-`~/.ai` preferences are shared with every container. When claude is started
-by devc your Claude settings and instructions take precedence over the
-project's.
+Your git config, Claude Code settings, credentials, and `~/.ai` preferences
+are copied into every container, and your bash history is shared with it
+without the container having access to the history file. When claude is
+started by devc your Claude settings and instructions take precedence over
+the project's.
 
 ## Requirements
 
@@ -51,6 +52,8 @@ devc rm [-y] [name|id...]
 devc init          Copy the shared config into .devcontainer/ to customise it
 devc ls            List all devcontainers with their IDs and names
 
+devc --no-history <command>
+                   Run the command without sharing bash history with the host
 devc --no-sysbox <command>
                    Create containers with Docker's default runtime even when
                    sysbox is installed
@@ -113,18 +116,37 @@ zypper or pacman.
 devc never edits a repository's devcontainer.json. Everything it adds is
 passed to the devcontainer CLI or copied into the running container:
 
-- `--mount` binds `~/.bash_history` to `/mnt/devc/bash_history`, and sessions
-  set `HISTFILE` to it. Mounts only apply when the container is created, so
-  run `devc rebuild` for containers created without devc.
-- Missing sources of the config's bind mounts inside your home directory,
-  such as `~/.m2/repository`, are created as directories before the
-  container is created, as `docker run -v` does. Sources elsewhere are left
-  to Docker.
 - `--additional-features` installs claude (and Node.js, which it needs) when
   the config has no claude-code feature. Features the config already has
   keep their options.
 - Files are copied into the remote user's home directory, whichever user
   and image the config uses.
+
+## Mounts of your home directory
+
+A config, or a feature it uses, can bind-mount files of your home directory
+such as `~/.claude`, `~/.m2/repository` or a shell history file, giving the
+container write access to them. devc replaces every bind mount whose source
+is a hidden entry of your home directory, or inside one, with a copy:
+
+- devc runs as the devcontainer CLI's docker. It removes those mounts from
+  the `docker run` that creates the container and lists them in the
+  container's `devc.copied-mounts` label. Every other docker command runs
+  unchanged.
+- Once the container is created, and before its lifecycle commands run,
+  devc copies each source that exists on the host to the mount's target,
+  owned by the remote user. Sources missing on the host are skipped.
+- Sources devc shares anyway, `~/.claude`, `~/.claude.json`, `~/.ai`,
+  `~/.gitconfig` and `~/.docker`, are copied as described under
+  [Shared files](#shared-files): per-machine Claude state stays on the host
+  and docker upload credentials are left out.
+- Changes made in the container stay in the container.
+
+The workspace folder and mounts from outside your home directory stay
+mounted. devc never creates files or directories on the host for a mount:
+when such a mount's source is missing, devc stops before the container is
+created and names it. Files are never copied into a path the container
+mounts, as a bind mount writes through to the host.
 
 ## Shared files
 
@@ -138,7 +160,26 @@ dotfiles kept in another directory work:
 | `~/.ai` | AI preferences. |
 | `~/.gitconfig` | |
 | `~/.docker/config.json` | Registries whose name contains `upload` are removed and the file is read-only, leaving pull access only. |
-| `microk8s config` | Written to `~/.kube/config` when microk8s runs on the host. |
+| `microk8s config` | Merged into `~/.kube/config` when microk8s is installed and running on the host. Other clusters in it are kept, as is the current context, so a kind cluster in the container stays the default. Merging needs `kubectl` in the container; without it the file is only written when there is none. |
+
+## Shell history
+
+Your `~/.bash_history` is readable in the shells of `devc shell` sessions,
+and the commands typed in them are appended to it. The host file is never
+mounted, so the container cannot truncate, edit or replace it:
+
+- When a session starts, devc copies the host history into the container.
+  Shells read the copy at their first prompt, after their rc files have run.
+- The container's shells write their history to
+  `~/.local/state/devc/bash_history` in the container.
+- When a session starts and when it ends, devc appends those commands to
+  `~/.bash_history` on the host and empties the container's file. It only
+  appends, in one write, and leaves out lines with control characters or
+  invalid UTF-8, and anything over 1 MiB per merge.
+- devc does not create `~/.bash_history` on the host. While there is none,
+  the container keeps its history.
+
+Run devc with `--no-history` to leave the container's shell history alone.
 
 While a devc session runs, changes to `~/.claude` and `~/.ai`
 on the host are copied into the container. Changes made in the container are
@@ -285,6 +326,8 @@ make fmt      # gofmt -s -w .
 | `internal/release` | Checksum verified release downloads |
 | `internal/config` | devc settings and the shared devcontainer config |
 | `internal/assets` | Files installed in containers and their paths |
-| `internal/sysbox` | Sysbox detection and the docker shim that creates containers with it |
-| `internal/archive` | In-memory tar archives |
+| `internal/dockershim` | devc as the devcontainer CLI's docker, replacing home directory bind mounts with copies and creating containers with sysbox |
+| `internal/sysbox` | Sysbox runtime detection |
+| `internal/archive` | Tar archives, in memory or streamed |
+| `internal/flock` | Exclusive file locks between devc processes |
 | `internal/xdg` | XDG base directories |

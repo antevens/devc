@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/antevens/devc/internal/config"
+	"github.com/antevens/devc/internal/flock"
 	"github.com/antevens/devc/internal/xdg"
 )
 
@@ -228,18 +229,7 @@ func (fc *Client) active(ctx context.Context, tok *Token) (bool, error) {
 // creates, installs and revokes its tokens. The lock is held until the
 // returned function is called.
 func (fc *Client) lock() (func(), error) {
-	if err := os.MkdirAll(fc.Dir, 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(filepath.Join(fc.Dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := lockFile(f); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("lock %s: %w", f.Name(), err)
-	}
-	return func() { f.Close() }, nil
+	return flock.Lock(filepath.Join(fc.Dir, "lock"))
 }
 
 func (fc *Client) file(f Forge) string {

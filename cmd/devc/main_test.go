@@ -15,7 +15,7 @@ func TestCompletion(t *testing.T) {
 	if err := completion(&buf, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), `compgen -W "`+strings.Join(commands, " ")+` --no-sysbox --help --version"`) {
+	if !strings.Contains(buf.String(), `compgen -W "`+strings.Join(commands, " ")+` --no-history --no-sysbox --help --version"`) {
 		t.Errorf("completion lacks the commands:\n%s", buf.String())
 	}
 	if err := completion(&buf, []string{"zsh"}); err == nil {

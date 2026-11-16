@@ -30,6 +30,7 @@ func TestEmbedded(t *testing.T) {
 	for name, data := range map[string][]byte{
 		"prompt": ClaudePrompt, "log hook": LogHook, "launcher": Launcher,
 		"credential helper": CredentialHelper, "profile": Profile,
+		"kubeconfig merge": MergeKubeconfig,
 	} {
 		if len(data) == 0 {
 			t.Errorf("%s is empty", name)

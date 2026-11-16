@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,29 +56,22 @@ func parseMount(s string) (mount, error) {
 	return m, nil
 }
 
-// createMountSources creates missing bind mount sources inside home as
-// directories, as docker run -v does, and reports each one to w.
-func createMountSources(mounts []mount, home string, w io.Writer) error {
+// checkMountSources returns an error naming the bind mount sources that do
+// not exist on the host. Docker refuses to create a container with a missing
+// bind source, and devc does not create them.
+func checkMountSources(mounts []mount) error {
+	var missing []string
 	for _, m := range mounts {
-		if m.Type != "bind" || !within(home, m.Source) {
+		if m.Type != "bind" || !filepath.IsAbs(m.Source) {
 			continue
 		}
-		if _, err := os.Lstat(m.Source); !errors.Is(err, fs.ErrNotExist) {
-			continue
+		if _, err := os.Stat(m.Source); errors.Is(err, fs.ErrNotExist) {
+			missing = append(missing, m.Source)
 		}
-		if err := os.MkdirAll(m.Source, 0o700); err != nil {
-			return fmt.Errorf("create mount source: %w", err)
-		}
-		fmt.Fprintf(w, "devc: created missing mount source %s\n", m.Source)
 	}
-	return nil
-}
-
-// within reports whether path is dir or inside it.
-func within(dir, path string) bool {
-	if !filepath.IsAbs(path) {
-		return false
+	if len(missing) == 0 {
+		return nil
 	}
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && filepath.IsLocal(rel)
+	return fmt.Errorf("bind mount sources missing on the host: %s; create them or remove the mounts from the devcontainer config",
+		strings.Join(missing, ", "))
 }

@@ -1,11 +1,12 @@
-// Package archive builds tar archives in memory, to copy files into
-// containers.
+// Package archive builds tar archives, in memory or as a stream, to copy
+// files into containers.
 package archive
 
 import (
 	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -14,8 +15,8 @@ import (
 	"time"
 )
 
-// Archive is a tar archive built in memory. Errors are kept and returned by
-// Bytes.
+// Archive is a tar archive built in memory, or written to a stream. Errors
+// are kept and returned by Bytes or Close.
 type Archive struct {
 	buf      bytes.Buffer
 	tw       *tar.Writer
@@ -23,11 +24,19 @@ type Archive struct {
 	err      error
 }
 
-// New returns an archive whose entries are owned by uid and gid. The owners
-// only apply when the archive is extracted as root.
+// New returns an archive built in memory whose entries are owned by uid and
+// gid. The owners only apply when the archive is extracted as root.
 func New(uid, gid int) *Archive {
 	a := &Archive{uid: uid, gid: gid}
 	a.tw = tar.NewWriter(&a.buf)
+	return a
+}
+
+// NewStream returns an archive that writes its entries to w as they are
+// added, owned by uid and gid. Close finishes it.
+func NewStream(w io.Writer, uid, gid int) *Archive {
+	a := &Archive{uid: uid, gid: gid}
+	a.tw = tar.NewWriter(w)
 	return a
 }
 
@@ -65,6 +74,17 @@ func (a *Archive) Bytes() ([]byte, error) {
 	return a.buf.Bytes(), nil
 }
 
+// Close finishes an archive from NewStream.
+func (a *Archive) Close() error {
+	if a.err != nil {
+		return fmt.Errorf("build archive: %w", a.err)
+	}
+	if err := a.tw.Close(); err != nil {
+		return fmt.Errorf("build archive: %w", err)
+	}
+	return nil
+}
+
 func (a *Archive) write(h *tar.Header, data []byte) {
 	if a.err != nil {
 		return
@@ -72,6 +92,17 @@ func (a *Archive) write(h *tar.Header, data []byte) {
 	h.Uid, h.Gid = a.uid, a.gid
 	if a.err = a.tw.WriteHeader(h); a.err == nil && data != nil {
 		_, a.err = a.tw.Write(data)
+	}
+}
+
+// writeFrom writes an entry with h.Size bytes of contents read from r.
+func (a *Archive) writeFrom(h *tar.Header, r io.Reader) {
+	if a.err != nil {
+		return
+	}
+	h.Uid, h.Gid = a.uid, a.gid
+	if a.err = a.tw.WriteHeader(h); a.err == nil {
+		_, a.err = io.CopyN(a.tw, r, h.Size)
 	}
 }
 
@@ -88,14 +119,15 @@ func (a *Archive) addPath(name, src string, skip, ancestors map[string]bool) err
 
 	switch {
 	case info.Mode().IsRegular():
-		data, err := os.ReadFile(src)
+		f, err := os.Open(src)
 		if os.IsPermission(err) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		a.write(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: int64(info.Mode().Perm()), Size: int64(len(data)), ModTime: info.ModTime()}, data)
+		defer f.Close()
+		a.writeFrom(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: int64(info.Mode().Perm()), Size: info.Size(), ModTime: info.ModTime()}, f)
 	case info.IsDir():
 		real, err := filepath.EvalSymlinks(src)
 		if err != nil {
