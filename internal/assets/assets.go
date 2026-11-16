@@ -24,6 +24,9 @@ const (
 	CredentialHelperPath = Dir + "/git-credential-devc"
 	// GitConfigPath is included from the system git config.
 	GitConfigPath = Dir + "/gitconfig"
+	// MountsCopiedPath marks a container whose replaced bind mounts have
+	// been copied in.
+	MountsCopiedPath = Dir + "/mounts-copied"
 	// ProfilePath sources the environment and defines the claude function
 	// for login shells.
 	ProfilePath = "/etc/profile.d/devc.sh"
@@ -41,4 +44,6 @@ var (
 	CredentialHelper []byte
 	//go:embed files/devc-profile.sh
 	Profile []byte
+	//go:embed files/merge-kubeconfig.sh
+	MergeKubeconfig []byte
 )

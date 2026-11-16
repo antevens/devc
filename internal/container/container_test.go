@@ -1,6 +1,11 @@
 package container
 
-import "testing"
+import (
+	"archive/tar"
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestRemoteUser(t *testing.T) {
 	tests := []struct {
@@ -30,10 +35,47 @@ func TestRemoteUser(t *testing.T) {
 	}
 }
 
-func TestHasMount(t *testing.T) {
-	c := &Container{mounts: []string{"/workspaces/repo", "/mnt/devc/bash_history"}}
-	if !c.HasMount("/mnt/devc/bash_history") || c.HasMount("/mnt") {
-		t.Error("HasMount matched the wrong mounts")
+func TestMountOverlap(t *testing.T) {
+	c := &Container{mounts: []string{"/workspaces/repo", "/home/vscode/.claude", "/home/vscode/.local/share/x"}}
+	tests := []struct {
+		target            string
+		covered, overlaps bool
+	}{
+		{"/home/vscode/.claude", true, true},
+		{"/home/vscode/.claude/settings.json", true, true},
+		{"/home/vscode/.claude/", true, true},
+		{"/home/vscode/.claude.json", false, false},
+		{"/home/vscode/.local", false, true},
+		{"/home/vscode/.local/state/devc", false, false},
+		{"/home/vscode", false, true},
+		{"/workspaces/repository", false, false},
+		{"/opt/devc", false, false},
+	}
+	for _, tt := range tests {
+		if got := c.Covered(tt.target); got != tt.covered {
+			t.Errorf("Covered(%s) = %v, want %v", tt.target, got, tt.covered)
+		}
+		if got := c.Overlaps(tt.target); got != tt.overlaps {
+			t.Errorf("Overlaps(%s) = %v, want %v", tt.target, got, tt.overlaps)
+		}
+	}
+}
+
+func TestExtractRefusesMounts(t *testing.T) {
+	c := &Container{ID: "unused", Home: "/home/vscode", mounts: []string{"/home/vscode/.claude.json"}}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{".gitconfig", ".claude.json"} {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: 0o600}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := c.ExtractHome(buf.Bytes())
+	if err == nil || !strings.Contains(err.Error(), "/home/vscode/.claude.json") {
+		t.Errorf("got %v, want an error naming the mounted file", err)
 	}
 }
 

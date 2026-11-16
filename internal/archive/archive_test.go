@@ -59,6 +59,54 @@ func TestAddTree(t *testing.T) {
 	}
 }
 
+func TestNewStream(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "repo", "org"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("x"), 3<<20)
+	if err := os.WriteFile(filepath.Join(dir, "repo", "org", "a.jar"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	a := NewStream(&buf, 1000, 1001)
+	a.AddDir("home/vscode/.m2", 0o755)
+	if err := a.AddTree("home/vscode/.m2/repository", filepath.Join(dir, "repo"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(&buf)
+	var names []string
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Uid != 1000 || h.Gid != 1001 {
+			t.Errorf("%s: owner %d:%d", h.Name, h.Uid, h.Gid)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Typeflag == tar.TypeReg && !bytes.Equal(body, big) {
+			t.Errorf("%s: %d bytes, want %d", h.Name, len(body), len(big))
+		}
+		names = append(names, h.Name)
+	}
+	want := []string{"home/vscode/.m2/", "home/vscode/.m2/repository/", "home/vscode/.m2/repository/org/", "home/vscode/.m2/repository/org/a.jar"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
 func TestEntry(t *testing.T) {
 	if got := Entry("/opt/devc/run"); got != "opt/devc/run" {
 		t.Errorf("Entry = %q", got)

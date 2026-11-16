@@ -11,13 +11,14 @@ import (
 	"runtime/debug"
 
 	"github.com/antevens/devc/internal/config"
+	"github.com/antevens/devc/internal/dockershim"
 	"github.com/antevens/devc/internal/project"
 )
 
 // version is set with -ldflags "-X main.version=...".
 var version string
 
-const usage = `Usage: devc <command> [args...]
+const usage = `Usage: devc [--no-history] <command> [args...]
        devc --help | --version
 
 Commands:
@@ -42,6 +43,7 @@ Commands:
               source <(devc completion bash)
 
 Options:
+  --no-history   Don't share bash history with the host
   -h, --help     Show this help
   -V, --version  Show the devc version
 
@@ -49,10 +51,11 @@ The workspace is the git top-level of the current directory, or the current
 directory outside a git repository. Repositories without their own
 devcontainer.json use the shared config, set DEVC_CONFIG to use another one.
 
-Your shell history, git config, Claude Code settings, credentials and
-~/.ai preferences are shared with the container. When claude is started
-by devc your Claude settings and instructions take precedence over the
-project's.
+Your git config, Claude Code settings, credentials and ~/.ai preferences are
+copied into the container. Your bash history is readable in the container's
+shells and the commands typed there are appended to it, without the
+container having access to the history file. When claude is started by devc
+your Claude settings and instructions take precedence over the project's.
 
 GitHub and GitLab repositories get gh or glab installed and, when configured
 in ~/.config/devc/config.json, a token limited to the repository.
@@ -62,11 +65,23 @@ in ~/.config/devc/config.json, a token limited to the repository.
 var commands = []string{"up", "start", "shell", "claude", "remote", "update", "rebuild", "stop", "down", "rm", "init", "ls", "completion", "help"}
 
 func main() {
+	// devc runs as the devcontainer CLI's docker to replace bind mounts of
+	// the home directory with copies; see package dockershim.
+	if docker := os.Getenv(dockershim.Env); docker != "" {
+		err := dockershim.Exec(docker, os.Args[1:])
+		fmt.Fprintf(os.Stderr, "devc: run %s: %v\n", docker, err)
+		os.Exit(127)
+	}
 	os.Exit(run(context.Background(), os.Args[1:]))
 }
 
 // run executes a devc command and returns the process exit code.
 func run(ctx context.Context, args []string) int {
+	history := true
+	for len(args) > 0 && args[0] == "--no-history" {
+		history = false
+		args = args[1:]
+	}
 	command := ""
 	if len(args) > 0 {
 		command, args = args[0], args[1:]
@@ -91,6 +106,7 @@ func run(ctx context.Context, args []string) int {
 	if err != nil {
 		return report(err)
 	}
+	p.History = history
 
 	switch command {
 	case "up", "start":

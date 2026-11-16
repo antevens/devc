@@ -28,7 +28,9 @@ import (
 // Session runs cmd in the devcontainer through the launcher, starting the
 // container if needed. While cmd runs, changed shared files are copied into
 // the container, tokens are renewed and OSC 52 copies are written to the
-// host clipboard, logging errors to devc.log in the state directory.
+// host clipboard, logging errors to devc.log in the state directory. With
+// History set, the host's bash history is copied in before cmd starts and
+// the commands typed in the container are appended to it after cmd ends.
 func (p *Project) Session(ctx context.Context, cmd []string) error {
 	c, err := container.Find(p.Workspace)
 	if err != nil {
@@ -73,8 +75,14 @@ func (p *Project) Session(ctx context.Context, cmd []string) error {
 	go p.forges.Renew(renewCtx, c, forges, log)
 
 	args := append([]string{"exec"}, p.configArgs(false)...)
-	if c.HasMount(historyMount) {
-		args = append(args, "--remote-env", "HISTFILE="+historyMount)
+	history := false
+	if p.History {
+		if err := p.syncHistory(c); err != nil {
+			warn(err)
+		} else {
+			history = true
+			args = append(args, historyEnv(c)...)
+		}
 	}
 	args = append(args, assets.LauncherPath)
 	args = append(args, cmd...)
@@ -82,7 +90,13 @@ func (p *Project) Session(ctx context.Context, cmd []string) error {
 	// The command in the container handles interrupts.
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
 	defer signal.Reset(syscall.SIGINT, syscall.SIGQUIT)
-	return runSession(ctx, args, log)
+	err = runSession(ctx, args, log)
+	if history {
+		if mergeErr := p.mergeHistory(c); mergeErr != nil {
+			warn(mergeErr)
+		}
+	}
+	return err
 }
 
 // runSession runs devcontainer with args attached to the terminal. When

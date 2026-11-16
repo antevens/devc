@@ -11,6 +11,32 @@ import (
 	"time"
 )
 
+func TestCopies(t *testing.T) {
+	tests := []struct {
+		source, target string
+		want           bool
+	}{
+		{"/home/u/.claude", "/home/vscode/.claude", true},
+		{"/home/u/.claude.json", "/home/vscode/.claude.json", true},
+		{"/home/u/.claude/agents", "/home/vscode/.claude/agents", true},
+		{"/home/u/.ai", "/home/vscode/.ai", true},
+		{"/home/u/.gitconfig", "/home/vscode/.gitconfig", true},
+		{"/home/u/.docker", "/home/vscode/.docker", true},
+		{"/home/u/.docker/config.json", "/home/vscode/.docker/config.json", true},
+		{"/home/u/.claude", "/root/.claude", false},
+		{"/home/u/.claude", "/home/vscode/.claude-host", false},
+		{"/home/u/.gemini", "/home/vscode/.gemini", false},
+		{"/home/u/.kube", "/home/vscode/.kube", false},
+		{"/home/u/.m2/repository", "/home/vscode/.m2/repository", false},
+		{"/other/.claude", "/home/vscode/.claude", false},
+	}
+	for _, tt := range tests {
+		if got := Copies(tt.source, tt.target, "/home/u", "/home/vscode"); got != tt.want {
+			t.Errorf("Copies(%s, %s) = %v, want %v", tt.source, tt.target, got, tt.want)
+		}
+	}
+}
+
 func TestFilterDockerConfig(t *testing.T) {
 	in := `{"auths":{"ghcr.io":{},"Upload.example.com":{}},"credHelpers":{"upload-registry":"gcr","docker.io":"pass"},"other":1}`
 	out, err := filterDockerConfig([]byte(in))

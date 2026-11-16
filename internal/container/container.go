@@ -3,10 +3,14 @@
 package container
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -17,11 +21,13 @@ const FolderLabel = "devcontainer.local_folder"
 // Container is a running devcontainer and the user devcontainer exec runs
 // commands as.
 type Container struct {
-	ID     string
-	User   string
-	Home   string
-	UID    int
-	GID    int
+	ID   string
+	User string
+	Home string
+	UID  int
+	GID  int
+	// Labels are the container's labels.
+	Labels map[string]string
 	mounts []string
 }
 
@@ -73,7 +79,7 @@ func Inspect(id string) (*Container, error) {
 	if len(result) == 0 {
 		return nil, fmt.Errorf("docker inspect %s: no such container", id)
 	}
-	c := &Container{ID: id}
+	c := &Container{ID: id, Labels: result[0].Config.Labels}
 	if c.User, err = remoteUser(result[0].Config.Labels["devcontainer.metadata"], result[0].Config.User); err != nil {
 		return nil, err
 	}
@@ -147,10 +153,27 @@ func (c *Container) lookupUser() error {
 	return nil
 }
 
-// HasMount reports whether the container has a mount at target.
-func (c *Container) HasMount(target string) bool {
+// Covered reports whether target is a mount destination of the container or
+// lies under one, so that writing it would write into the mount.
+func (c *Container) Covered(target string) bool {
+	target = path.Clean(target)
 	for _, m := range c.mounts {
-		if m == target {
+		if target == m || strings.HasPrefix(target, strings.TrimSuffix(m, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Overlaps reports whether target is covered by a mount or has a mount
+// beneath it, so that copying a tree to target would write into a mount.
+func (c *Container) Overlaps(target string) bool {
+	target = path.Clean(target)
+	if c.Covered(target) {
+		return true
+	}
+	for _, m := range c.mounts {
+		if strings.HasPrefix(m, strings.TrimSuffix(target, "/")+"/") {
 			return true
 		}
 	}
@@ -160,6 +183,12 @@ func (c *Container) HasMount(target string) bool {
 // Output runs a command in the container as user and returns its output.
 func (c *Container) Output(user string, args ...string) ([]byte, error) {
 	return exec.Command("docker", append([]string{"exec", "--user", user, c.ID}, args...)...).Output()
+}
+
+// Run runs a command in the container as user and returns its combined
+// output.
+func (c *Container) Run(user string, args ...string) ([]byte, error) {
+	return exec.Command("docker", append([]string{"exec", "--user", user, c.ID}, args...)...).CombinedOutput()
 }
 
 // HasCommand reports whether name is on the remote user's login PATH.
@@ -196,7 +225,32 @@ func (c *Container) ExtractRoot(archive []byte) error {
 	return c.extract("root", "/", archive)
 }
 
+// ExtractRootFrom unpacks a tar archive read from r at the root directory as
+// root, keeping the owners recorded in the archive. Unlike ExtractRoot it
+// does not check the entries: the caller ensures none is inside a mount.
+func (c *Container) ExtractRootFrom(r io.Reader) error {
+	cmd := exec.Command("docker", "exec", "--interactive", "--user", "root", c.ID,
+		"tar", "-x", "-f", "-", "-C", "/")
+	cmd.Stdin = r
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract files to / in container: %w: %s", err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// extract unpacks archive at dir as user. It refuses archives with an entry
+// inside one of the container's mounts: files are never copied into a mount,
+// as a bind mount writes through to the host.
 func (c *Container) extract(user, dir string, archive []byte) error {
+	names, err := entryNames(archive)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if target := path.Join(dir, name); c.Covered(target) {
+			return fmt.Errorf("not copying %s into the container: it is inside a mount", target)
+		}
+	}
 	cmd := exec.Command("docker", "exec", "--interactive", "--user", user, c.ID,
 		"tar", "-x", "-f", "-", "-C", dir)
 	cmd.Stdin = bytes.NewReader(archive)
@@ -204,4 +258,20 @@ func (c *Container) extract(user, dir string, archive []byte) error {
 		return fmt.Errorf("extract files to %s in container: %w: %s", dir, err, bytes.TrimSpace(out))
 	}
 	return nil
+}
+
+// entryNames returns the names of the entries of a tar archive.
+func entryNames(archive []byte) ([]string, error) {
+	var names []string
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return names, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read archive: %w", err)
+		}
+		names = append(names, h.Name)
+	}
 }

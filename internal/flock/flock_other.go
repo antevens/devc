@@ -1,6 +1,6 @@
 //go:build !(linux || darwin || dragonfly || freebsd || illumos || netbsd || openbsd)
 
-package forge
+package flock
 
 import "os"
 
